@@ -1,0 +1,34 @@
+\documentclass[a4paper,12pt]{article}
+\input{framework/Setup}
+
+\def\Titel{Vorlage für verschiedene Dokumente der HS Coburg}
+\def\Dozent{<DOZENT>}
+
+% Infos zum Autor
+\def\Autorenname{<NACHNAME, VORNAME>}
+\def\Geburtsdatum{<GEBURTSDATUM>}
+\def\Matrikelnummer{<MATRIKELNUMMER>}
+\def\Studiengang{<STUDIENGANG>}
+
+% Infos zum Unternehmen
+\def\Unternehmen{<FIRMENNAME>}
+\def\Abteilung{<ABTEILUNG>}
+\def\Strasse{<STRAßE>}
+\def\Ort{<ORT>}
+
+% Infos zum Betreuer
+\def\Betreuer{<BETREUER>}
+\def\Funktion{<FUNKTION BETREUER>}
+\def\Telefon{<TELEFONNUMMER BETREUER>}
+\def\Email{<BETREUER EMAIL>}
+
+% Daten
+\def\Beginn{<BEGINN>}
+\def\Ende{<ENDE>}
+\def\Abgabe{\today}
+
+\begin{HSCDocument}[preset=Praxisbericht]
+
+  \include{Sektionen/Einfuehrung}
+
+\end{HSCDocument}
