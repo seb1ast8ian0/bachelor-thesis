@@ -1,0 +1,22 @@
+{
+  "emeraldwalk.runonsave": {
+    "autoClearConsole": true,
+    "message": "🔄 LaTeX Build gestartet...",
+    "messageAfter": "✅ LaTeX Build abgeschlossen",
+    "showElapsed": true,
+    "commands": [
+      { 
+        "match": "\\.(tex|bib)$", 
+        "cmd": "export PATH=\"/usr/local/texlive/2025/bin/universal-darwin:$PATH\" && make",
+        "message": "📄 Kompiliere ${file}...",
+        "messageAfter": "✅ ${file} verarbeitet",
+        "showElapsed": true,
+        "autoShowOutputPanel": "error"
+      }
+    ]
+  },
+  "files.autoSave": "off",
+  "terminal.integrated.env.osx": {
+    "PATH": "/usr/local/texlive/2025/bin/universal-darwin:${env:PATH}"
+  }
+}
