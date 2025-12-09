@@ -1,0 +1,32 @@
+\section{Theoretische Grundlagen}
+
+\subsection{Repräsentation von Text- und Tabulardaten}
+
+\subsubsection{Textrepräsentation}
+
+Für die effektive Verarbeitung natürlicher Sprache (NLP) und die in dieser Arbeit untersuchte Fusion von Text- und Tabellendaten ist die Transformation textueller Informationen in numerische Vektorrepräsentationen unerlässlich \cite{Abubakar2022}.
+
+Zentrale Begriffe:
+\begin{itemize}
+    \item \textbf{Text Vektorisierung}: Umwandlung von Text in numerische Vektoren, notwendig für maschinelle Lernalgorithmen \cite{Abubakar2022}.
+    \item \textbf{Embedding}: Gelernte, dichte und niedrigdimensionale Vektorrepräsentation von Text (Wörtern, Sätzen etc.), die semantische Beziehungen abbildet (z. B. „king – man + woman $\approx$ queen“) \cite{Mikolov2013}.
+    \item \textbf{Repräsentation}: Jede Form der Textkodierung im Modell.
+\end{itemize}
+
+Historisch betrachtet basierten frühe Ansätze auf frequenzbasierten Verfahren wie dem Bag-of-Words-Modell oder der Term Frequency-Inverse Document Frequency (TF-IDF) \cite{Salton1988}. Diese Methoden repräsentieren Dokumente als Vektoren von Worthäufigkeiten, ignorieren jedoch weitgehend die grammatikalische Struktur und die semantische Bedeutung der Wörter. Zudem führen sie oft zu hochdimensionalen, dünn besetzten Vektoren (sparse vectors).
+
+Einen signifikanten Fortschritt markierte die Einführung von verteilten Wortrepräsentationen (Word Embeddings), insbesondere durch das Word2Vec-Verfahren \cite{Mikolov2013}. Hierbei werden Wörter in einen dichten, niedrigdimensionalen Vektorraum projiziert, wobei diese Projektionen durch einfache neuronale Netze gelernt werden. Semantisch ähnliche Wörter liegen in diesem Vektorraum nahe beieinander. Ein wesentlicher Nachteil dieser statischen Embeddings besteht jedoch darin, dass jedem Wort unabhängig von seinem Kontext ein fixer Vektor zugewiesen wird. Polyseme Wörter, die je nach Satzkontext unterschiedliche Bedeutungen haben, können so nicht adäquat abgebildet werden.
+
+Um dieses Defizit zu beheben, wurden kontextuelle Embeddings entwickelt. Peters et al. stellten mit ELMo (Embeddings from Language Models) einen Ansatz vor, der tiefere neuronale Netze nutzt, um kontextabhängige Wortvektoren zu generieren \cite{Peters2018}. Den aktuellen Standard setzen jedoch Transformer-basierte Modelle wie BERT (Bidirectional Encoder Representations from Transformers), eingeführt von Devlin et al. \cite{Devlin2019}. BERT erzeugt durch ein bidirektionales Training tiefgreifende kontextuelle Repräsentationen, die das Verständnis von komplexen Sprachstrukturen ermöglichen. Eine detailliertere Betrachtung der Transformer-Architektur erfolgt in einem späteren Kapitel dieses Theorieteils.
+
+Für die Verarbeitung ganzer Sätze oder Dokumente, wie sie in dieser Arbeit relevant ist, stoßen reine Token-Embeddings jedoch an Grenzen. Hier kommen Techniken wie Pooling oder die Verwendung spezieller Tokens ins Spiel. Insbesondere das \texttt{[CLS]}-Token (Classifier Token) in Modellen wie BERT wird häufig genutzt, um eine aggregierte Repräsentation des gesamten Satzes zu erhalten. Dieses Token sammelt während der Verarbeitung durch die Transformer-Schichten kontextuelle Informationen des gesamten Inputs und kann dann als Satz-Embedding verwendet werden. Während Modifikationen wie Sentence-BERT (SBERT) \cite{Reimers2019} darauf abzielen, semantisch aussagekräftige Satz-Embeddings zu erzeugen, liegt der Fokus dieser Arbeit auf der direkten Nutzung von \texttt{[CLS]}-Tokens für die Satzrepräsentation. Diese stabilen semantischen Kodierungen auf Satzebene schaffen die notwendige Voraussetzung, um Textinformationen effizient mit anderen Modalitäten, wie tabellarischen Merkmalen, in einer multimodalen Architektur zu fusionieren.
+
+\subsubsection{Tabellendatenrepräsentation}
+
+Test
+
+\subsection{Attention-Mechanismen}
+
+\subsection{Transformer-Architektur}
+
+\subsection{Multimodales Lernen und Feature Fusion}
