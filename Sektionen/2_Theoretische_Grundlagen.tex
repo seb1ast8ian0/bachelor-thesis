@@ -1,32 +1,127 @@
 \section{Theoretische Grundlagen}
 
-\subsection{Repräsentation von Text- und Tabulardaten}
+\subsection{Multimodale Daten}
 
-\subsubsection{Textrepräsentation}
+\subsubsection{Heterogenität in multimodalen Daten}
 
-Für die effektive Verarbeitung natürlicher Sprache (NLP) und die in dieser Arbeit untersuchte Fusion von Text- und Tabellendaten ist die Transformation textueller Informationen in numerische Vektorrepräsentationen unerlässlich \cite{Abubakar2022}.
+Multimodale Daten, wie Texte und Tabellen, stellen eine Herausforderung dar, da jede Modalität eine eigene Struktur, Semantik und statistische Verteilung besitzt \cite{Baltrusaitis2017}. Textdaten sind sequenziell und linguistisch strukturiert, wobei Informationen über Tokens verteilt sind und Semantik aus Kontext und Reihenfolge entsteht. Im Gegensatz dazu sind tabellarische Daten attributbasiert und nicht-sequenziell; jedes Feature trägt eine explizite Bedeutung, und die Spaltenreihenfolge ist irrelevant.
 
-Zentrale Begriffe:
+Diese strukturellen Unterschiede führen zu einem „Manifold Mismatch“ \cite{Baltrusaitis2017, Huang2020}. Text wird in hochdimensionalen, kontinuierlichen Embedding-Räumen repräsentiert, während Tabulardaten aus heterogenen, unskalierten Merkmalen bestehen. Die geometrische Inkompatibilität dieser Räume verhindert, dass Attention-Mechanismen, die auf Text-Tokens effektiv angewendet werden können, direkt auf rohe Tabularfeatures funktionieren. Dies liegt daran, dass Tabularfeatures weder normalisiert sind noch eine Tokenstruktur oder semantische Distanz aufweisen.
+
+Für eine sinnvolle Fusion von Text und Tabular in multimodalen Modellen ist daher eine Projektion in einen gemeinsamen Embedding-Space unerlässlich. Modelle müssen Mechanismen zur Harmonisierung der Skalen, zur Tokenisierung tabellarischer Merkmale und zur Erzeugung eines gemeinsamen semantischen Raums bereitstellen. Die Entwicklung solcher Mechanismen ist ein zentrales Thema in der Forschung zu multimodalen Modellen.
+
+\subsubsection{Repräsentation von Textdaten}
+\label{sec:text_representation}
+
+Für die effektive Verarbeitung natürlicher Sprache auch genannt \Gls{nlp} und die in dieser Arbeit untersuchte Fusion von Text- und Tabellendaten ist die Transformation textueller Informationen in numerische Vektorrepräsentationen unerlässlich \cite{Abubakar2022}.
+
+Zentrale Begriffe sind dabei:
 \begin{itemize}
     \item \textbf{Text Vektorisierung}: Umwandlung von Text in numerische Vektoren, notwendig für maschinelle Lernalgorithmen \cite{Abubakar2022}.
     \item \textbf{Embedding}: Gelernte, dichte und niedrigdimensionale Vektorrepräsentation von Text (Wörtern, Sätzen etc.), die semantische Beziehungen abbildet (z. B. „king – man + woman $\approx$ queen“) \cite{Mikolov2013}.
     \item \textbf{Repräsentation}: Jede Form der Textkodierung im Modell.
 \end{itemize}
 
-Historisch betrachtet basierten frühe Ansätze auf frequenzbasierten Verfahren wie dem Bag-of-Words-Modell oder der Term Frequency-Inverse Document Frequency (TF-IDF) \cite{Salton1988}. Diese Methoden repräsentieren Dokumente als Vektoren von Worthäufigkeiten, ignorieren jedoch weitgehend die grammatikalische Struktur und die semantische Bedeutung der Wörter. Zudem führen sie oft zu hochdimensionalen, dünn besetzten Vektoren (sparse vectors).
+Historisch betrachtet basierten frühe Ansätze auf frequenzbasierten Verfahren wie dem Bag-of-Words-Modell oder der \Gls{tfidf} \cite{Salton1988}. Diese Methoden repräsentieren Dokumente als Vektoren von Worthäufigkeiten, ignorieren jedoch weitgehend die grammatikalische Struktur und die semantische Bedeutung der Wörter. Zudem führen sie oft zu hochdimensionalen, dünn besetzten Vektoren (sparse vectors).
 
 Einen signifikanten Fortschritt markierte die Einführung von verteilten Wortrepräsentationen (Word Embeddings), insbesondere durch das Word2Vec-Verfahren \cite{Mikolov2013}. Hierbei werden Wörter in einen dichten, niedrigdimensionalen Vektorraum projiziert, wobei diese Projektionen durch einfache neuronale Netze gelernt werden. Semantisch ähnliche Wörter liegen in diesem Vektorraum nahe beieinander. Ein wesentlicher Nachteil dieser statischen Embeddings besteht jedoch darin, dass jedem Wort unabhängig von seinem Kontext ein fixer Vektor zugewiesen wird. Polyseme Wörter, die je nach Satzkontext unterschiedliche Bedeutungen haben, können so nicht adäquat abgebildet werden.
 
-Um dieses Defizit zu beheben, wurden kontextuelle Embeddings entwickelt. Peters et al. stellten mit ELMo (Embeddings from Language Models) einen Ansatz vor, der tiefere neuronale Netze nutzt, um kontextabhängige Wortvektoren zu generieren \cite{Peters2018}. Den aktuellen Standard setzen jedoch Transformer-basierte Modelle wie BERT (Bidirectional Encoder Representations from Transformers), eingeführt von Devlin et al. \cite{Devlin2019}. BERT erzeugt durch ein bidirektionales Training tiefgreifende kontextuelle Repräsentationen, die das Verständnis von komplexen Sprachstrukturen ermöglichen. Eine detailliertere Betrachtung der Transformer-Architektur erfolgt in einem späteren Kapitel dieses Theorieteils.
+Um dieses Defizit zu beheben, wurden kontextuelle Embeddings entwickelt. Peters et al. stellten mit \Gls{elmo} einen Ansatz vor, der tiefere neuronale Netze nutzt, um kontextabhängige Wortvektoren zu generieren \cite{Peters2018}. Den aktuellen Standard setzen jedoch Transformer-basierte Modelle wie \Gls{bert} (Bidirectional Encoder Representations from Transformers), eingeführt von Devlin et al. \cite{Devlin2019}. Als Encoder-only-Modell wird \gls{bert} auf großen Textmengen vor-trainiert und erzeugt durch ein bidirektionales Training tiefgreifende kontextuelle Repräsentationen. Im Gegensatz zu \gls{elmo} basiert \gls{bert} auf der Transformer-Architektur und nutzt intensiv Self-Attention-Mechanismen, deren technische Details in Abschnitt \ref{sec:transformer_attention} erläutert werden.
 
-Für die Verarbeitung ganzer Sätze oder Dokumente, wie sie in dieser Arbeit relevant ist, stoßen reine Token-Embeddings jedoch an Grenzen. Hier kommen Techniken wie Pooling oder die Verwendung spezieller Tokens ins Spiel. Insbesondere das \texttt{[CLS]}-Token (Classifier Token) in Modellen wie BERT wird häufig genutzt, um eine aggregierte Repräsentation des gesamten Satzes zu erhalten. Dieses Token sammelt während der Verarbeitung durch die Transformer-Schichten kontextuelle Informationen des gesamten Inputs und kann dann als Satz-Embedding verwendet werden. Während Modifikationen wie Sentence-BERT (SBERT) \cite{Reimers2019} darauf abzielen, semantisch aussagekräftige Satz-Embeddings zu erzeugen, liegt der Fokus dieser Arbeit auf der direkten Nutzung von \texttt{[CLS]}-Tokens für die Satzrepräsentation. Diese stabilen semantischen Kodierungen auf Satzebene schaffen die notwendige Voraussetzung, um Textinformationen effizient mit anderen Modalitäten, wie tabellarischen Merkmalen, in einer multimodalen Architektur zu fusionieren.
+Für die Verarbeitung ganzer Sätze oder Dokumente, wie sie in dieser Arbeit relevant ist, stoßen reine Token-Embeddings jedoch an Grenzen. Hier kommen Techniken wie Pooling oder die Verwendung spezieller Tokens ins Spiel. Insbesondere das \texttt{[CLS]}-Token (Classifier Token) in Modellen wie \gls{bert} wird häufig genutzt, um eine aggregierte Repräsentation des gesamten Satzes zu erhalten. Dieses spezielle Token wird jeder Eingabesequenz vorangestellt und sammelt während der Verarbeitung durch die Transformer-Schichten über Self-Attention kontextuelle Informationen des gesamten Inputs. Der finale Vektor des \texttt{[CLS]}-Tokens ($T_{[CLS]}$) dient somit als kompakte Repräsentation der gesamten Eingabe und wird in Klassifikationsaufgaben üblicherweise verwendet, um die Vorhersage zu treffen \cite{Devlin2019}. Während Modifikationen wie Sentence-BERT (SBERT) \cite{Reimers2019} darauf abzielen, semantisch aussagekräftige Satz-Embeddings zu erzeugen, liegt der Fokus dieser Arbeit auf der direkten Nutzung von \texttt{[CLS]}-Tokens für die Satzrepräsentation. Diese stabilen semantischen Kodierungen auf Satzebene schaffen die notwendige Voraussetzung, um Textinformationen effizient mit anderen Modalitäten, wie tabellarischen Merkmalen, in einer multimodalen Architektur zu fusionieren.
 
-\subsubsection{Tabellendatenrepräsentation}
+\subsubsection{Repräsentation tabellarischer Daten}
 
-Test
+Während Textdaten, wie im vorangegangenen Kapitel beschrieben, eine sequentielle Struktur aufweisen, unterscheiden sich tabellarische Daten fundamental in ihrer Beschaffenheit. Sie bilden die Grundlage zahlreicher Anwendungen in der Industrie, stellen jedoch für Deep-Learning-Ansätze eine besondere Herausforderung dar \cite{Borisov2024}. Um eine effektive Fusion mit Textmodalitäten in einer Transformer-Architektur zu ermöglichen, ist eine Transformation der rohen Tabellendaten in eine kompatible Repräsentation notwendig.
 
-\subsection{Attention-Mechanismen}
+\paragraph{Heterogenität und Permutationsinvarianz}
+Im Gegensatz zu homogenen Datenquellen wie Bildern (Pixelwerte) oder Texten (Wort-Tokens) zeichnen sich tabellarische Daten durch eine starke Heterogenität aus. Sie bestehen aus einem Mix von dichten numerischen Features (kontinuierliche Werte wie Preis oder Alter) und sparsen kategorialen Features (diskrete Werte wie Postleitzahl oder Produktkategorie) \cite{Borisov2024, Badaro2023}. 
 
-\subsection{Transformer-Architektur}
+Ein weiteres wesentliches Merkmal ist die Permutationsinvarianz der Spalten. Anders als Wörter in einem Satz, deren Position die semantische Bedeutung maßgeblich bestimmt (vgl. „Hund beißt Mann“ vs. „Mann beißt Hund“), haben die Spalten einer Tabelle keine natürliche Ordnung. Ein Modell muss daher robust gegenüber der Vertauschung von Feature-Positionen sein, solange die Zuordnung von Wert und Feature-Typ erhalten bleibt \cite{Gorishniy2021}. Die Repräsentation $(Feature_A, Feature_B)$ muss für das Netzwerk semantisch identisch zu $(Feature_B, Feature_A)$ verarbeitet werden.
 
-\subsection{Multimodales Lernen und Feature Fusion}
+\paragraph{Grenzen klassischer Vorverarbeitungsmethoden}
+In traditionellen Machine-Learning-Verfahren, wie Gradient Boosted Decision Trees (GBDT), werden kategoriale Daten häufig mittels One-Hot-Encoding (OHE) verarbeitet. Dabei wird eine kategoriale Variable mit der Kardinalität $C$ in einen binären Vektor der Länge $C$ transformiert. Für Deep-Learning-Modelle und insbesondere für die Integration in Transformer-Architekturen weist dieses Verfahren jedoch gravierende Nachteile auf:
+
+Zum einen führt OHE bei Features mit hoher Kardinalität zu extrem hochdimensionalen und dünn besetzten Vektoren (Sparsity). Dies erschwert es neuronalen Netzen, dichte und aussagekräftige Repräsentationen zu lernen, da der Großteil der Eingabewerte Null ist \cite{Huang2020, Gorishniy2021}. 
+Zum anderen fehlt OHE jegliche semantische Information. Alle Kategorien werden als orthogonal betrachtet, was bedeutet, dass der Abstand zwischen allen Kategorien im Vektorraum identisch ist. Semantische Beziehungen, wie etwa die Ähnlichkeit zwischen den Kategorien „Auto“ und „LKW“ im Vergleich zu „Apfel“, können durch OHE nicht abgebildet werden \cite{Huang2020}. 
+
+Auch einfache Multi-Layer Perceptrons (MLPs) stoßen auf rohen Daten an ihre Grenzen, da sie numerische Eingaben lediglich als skalare Werte betrachten und im ersten Schritt keine feature-spezifische Verarbeitung ermöglichen, wie sie beispielsweise für das Erlernen von Interaktionen zwischen spezifischen Features notwendig wäre \cite{Gorishniy2021}.
+
+\paragraph{Feature Tokenization und Latenter Raum}
+Um die Inkompatibilität zwischen den heterogenen Tabellendaten und den textbasierten Transformer-Modellen zu überwinden, ist eine Projektion der Features in einen gemeinsamen latenten Raum erforderlich. Dieser Prozess wird in der Literatur als \textit{Feature Tokenization} bezeichnet \cite{Borisov2024, Badaro2023}. 
+
+Das Ziel ist es, eine Tabellenzeile $x$ in eine Sequenz von Vektoren $\mathbf{E}$ zu transformieren, die strukturell der Eingabe eines Sprachmodells gleicht:
+\begin{equation}
+    \mathbf{E} = [\mathbf{e}_1, \mathbf{e}_2, \dots, \mathbf{e}_N] \quad \text{mit} \quad \mathbf{e}_i \in \mathbb{R}^H
+\end{equation}
+Hierbei entspricht $H$ der Dimension des Hidden-States des verwendeten Transformer-Modells (z. B. $H=768$ bei \gls{bert}). Durch diese Angleichung der Dimensionen wird die technische Voraussetzung geschaffen, um später Mechanismen wie Cross-Attention zwischen Text- und Tabellen-Tokens anzuwenden \cite{Badaro2023}. Im Gegensatz zu OHE erlaubt dieser dichte Vektorraum das Erlernen semantischer Ähnlichkeiten, sodass verwandte Features im Vektorraum geometrisch näher beieinander liegen.
+
+\paragraph{Methoden der Transformation}
+Für die Erzeugung dieser Token-Sequenz haben sich verschiedene Ansätze etabliert, die sich insbesondere in der Behandlung numerischer Werte unterscheiden.
+
+Für \textbf{kategoriale Features} wird analog zu Word Embeddings im \gls{nlp} eine Lookup-Tabelle gelernt. Jede Kategorie wird auf einen trainierbaren Vektor projiziert, der während des Trainings optimiert wird, um den semantischen Kontext der Kategorie zu erfassen \cite{Huang2020}.
+
+Für \textbf{numerische Features} ist eine Lookup-Tabelle nicht direkt anwendbar, da die Werte kontinuierlich sind. Hier kommen spezialisierte Verfahren zum Einsatz:
+\begin{itemize}
+    \item \textit{Lineare Projektion:} Der skalare Wert wird direkt mittels einer linearen Schicht in den hochdimensionalen Raum $\mathbb{R}^H$ projiziert.
+    \item \textit{Binning/Quantisierung:} Der Wertebereich wird in diskrete Intervalle unterteilt, die dann wie kategoriale Werte behandelt werden können. Dies ermöglicht dem Modell, nicht-lineare Zusammenhänge besser zu erfassen \cite{Somepalli2021, Gorishniy2021}.
+\end{itemize}
+
+\paragraph{Architekturen der Repräsentation}
+Hinsichtlich der Struktur der erzeugten Sequenz lassen sich zwei Hauptstrategien unterscheiden, die in aktuellen Forschungsarbeiten vorgeschlagen werden \cite{Badaro2023}:
+
+Der erste Ansatz, bekannt als \textbf{Column-wise Embeddings} (Spaltenweise Einbettung), bildet jedes Feature der Ursprungstabelle auf genau einen Token-Vektor ab. Dies wird beispielsweise im \textit{TabTransformer} \cite{Huang2020} oder im \textit{SAINT}-Modell \cite{Somepalli2021} angewendet. Die Sequenzlänge $N$ entspricht hierbei der Anzahl der Spalten. Der Vorteil liegt in der Erhaltung der feingranularen Information jedes einzelnen Features, was die Interpretierbarkeit durch Attention-Weights erleichtert.
+
+Der zweite Ansatz verfolgt eine \textbf{globale Projektion} (Latente Tokenization). Hierbei werden alle Features einer Zeile zunächst konkateniert und durch ein MLP geleitet, um eine Sequenz von latenten Tokens zu erzeugen, die nicht mehr zwangsläufig 1-zu-1 den ursprünglichen Spalten entsprechen \cite{Gu2021}. Dies ermöglicht eine Entkopplung der Sequenzlänge von der Anzahl der Eingabefeatures und kann die Rechenkomplexität in der nachfolgenden Attention-Schicht reduzieren. Zudem erhält das Modell so die Möglichkeit, bereits in der Tokenization-Phase globale Zusammenhänge zwischen den Features zu aggregieren.
+
+Unabhängig von der gewählten Methode ist das Ergebnis dieser Transformation eine Sequenz dichter Vektoren. Erst durch diesen Schritt wird die „Sprache“ der Tabelle in die „Sprache“ des Transformers übersetzt, was die Basis für die in dieser Arbeit untersuchte multimodale Fusion mittels Cross-Attention bildet.
+
+\subsection{Transformer-Architekturen und Attention-Mechanismen}
+\label{sec:transformer_attention}
+
+Nachdem im vorangegangenen Kapitel die Grundlagen der Datenrepräsentation für Text und Tabellen erläutert wurden, widmet sich dieser Abschnitt der Modellarchitektur, die den aktuellen Stand der Technik in der Verarbeitung natürlicher Sprache definiert: dem Transformer. Ursprünglich für maschinelle Übersetzungsaufgaben konzipiert, hat sich diese Architektur als extrem leistungsfähig für das Erlernen komplexer Zusammenhänge in sequenziellen Daten erwiesen. Das Verständnis der internen Mechanismen, insbesondere der Attention, ist essenziell für die in dieser Arbeit entwickelte multimodale Fusion.
+
+\subsubsection{Der Transformer-Encoder}
+
+Das Transformer-Modell wurde 2017 von Vaswani et al. eingeführt und markierte einen Paradigmenwechsel im Deep Learning, da es vollständig auf Rekurrenz und Faltung verzichtet und stattdessen ausschließlich auf Attention-Mechanismen setzt \cite{Vaswani2017}. Die ursprüngliche Architektur besteht aus zwei Hauptkomponenten: einem Encoder, der die Eingabesequenz verarbeitet und in eine abstrakte Repräsentation überführt, und einem Decoder, der basierend darauf eine Ausgabesequenz generiert.
+
+Für die Aufgabenstellung dieser Arbeit, bei der es um die Klassifikation von multimodalen Daten geht, ist primär der Encoder-Teil von Relevanz. Encoder-only-Modelle, wie das in Abschnitt \ref{sec:text_representation} schon vorgestellte \gls{bert}, nutzen einen Stapel von Transformer-Blöcken, um für jedes Eingabe-Token einen kontextualisierten Vektor zu berechnen \cite{Devlin2019}. Im Gegensatz zu statischen Embeddings (siehe Abschnitt \ref{sec:text_representation}), bei denen ein Wort stets denselben Vektor erhält, fließen im Transformer-Encoder Informationen aus dem gesamten Kontext der Sequenz in die Repräsentation jedes einzelnen Tokens ein. Der Encoder fungiert somit als eine hochkomplexe „Verstehens-Maschine“, die syntaktische und semantische Beziehungen innerhalb der Daten extrahiert.
+
+\subsubsection{Scaled Dot-Product Attention}
+
+Das Herzstück eines jeden Transformer-Blocks ist der Attention-Mechanismus. Er ermöglicht es dem Modell, dynamisch zu entscheiden, welche Teile der Eingabe für den aktuellen Verarbeitungsschritt relevant sind. Vaswani et al. formalisieren dies als \textit{Scaled Dot-Product Attention} \cite{Vaswani2017}.
+
+Das Konzept lässt sich durch eine Analogie aus dem Information Retrieval beschreiben: Eine Abfrage (\textit{Query} $Q$) wird gegen eine Menge von Schlüsseln (\textit{Keys} $K$) abgeglichen, um die passenden Werte (\textit{Values} $V$) zu extrahieren. Mathematisch wird dies durch folgende Gleichung ausgedrückt:
+
+\begin{equation}
+    \text{Attention}(Q, K, V) = \text{softmax}\left(\frac{QK^T}{\sqrt{d_k}}\right)V
+\end{equation}
+
+Hierbei berechnet das Skalarprodukt $QK^T$ die Ähnlichkeit zwischen der Query und allen Keys. Der Faktor $\frac{1}{\sqrt{d_k}}$ dient der Skalierung, um zu verhindern, dass die Werte für die Softmax-Funktion zu groß werden, was zu verschwindenden Gradienten führen würde \cite{Vaswani2017}. Die Softmax-Funktion normalisiert diese Ähnlichkeitswerte zu Gewichten, die sich zu 1 aufsummieren. Schließlich wird eine gewichtete Summe der Values $V$ gebildet. Intuitiv bedeutet dies: Ein Vektor $Q$ „sucht“ in den Vektoren $K$ nach relevanten Informationen und zieht sich die entsprechenden Inhalte aus $V$.
+
+\subsubsection{Self-Attention vs. Cross-Attention}
+
+Ein entscheidender Aspekt für das Verständnis moderner Transformer-Architekturen – und insbesondere für multimodale Modelle – ist die Herkunft der Vektoren $Q$, $K$ und $V$. Hierbei wird zwischen \textit{Self-Attention} und \textit{Cross-Attention} unterschieden.
+
+\paragraph{Self-Attention (Intra-Modal)}
+Im Standard-Encoder, wie er von Vaswani et al. \cite{Vaswani2017} beschrieben wird, stammen Query, Key und Value aus derselben Quelle (z.\,B. der Einbettung des vorherigen Layers). Dies wird als Self-Attention bezeichnet.
+\begin{itemize}
+    \item \textbf{Funktionsweise:} Jedes Token der Sequenz betrachtet jedes andere Token derselben Sequenz, um seinen eigenen Kontext zu schärfen.
+    \item \textbf{Zweck:} Aufbau eines tiefen Verständnisses innerhalb einer Modalität. So kann das Modell beispielsweise auflösen, worauf sich ein Pronomen in einem Satz bezieht oder wie die Bedeutung eines Wortes durch seine Nachbarn beeinflusst wird.
+\end{itemize}
+
+\paragraph{Cross-Attention (Inter-Modal)}
+Für die Fusion unterschiedlicher Modalitäten, wie Text und Tabellendaten, ist die Cross-Attention von zentraler Bedeutung. Dieses Konzept findet sich prominent in multimodalen Erweiterungen wie LXMERT \cite{Tan2019}.
+\begin{itemize}
+    \item \textbf{Funktionsweise:} Die Vektoren stammen aus unterschiedlichen Quellen. Beispielsweise generiert Modalität A (z.\,B. Text) die Queries $Q$, während Modalität B (z.\,B. Tabelle) die Keys $K$ und Values $V$ liefert.
+    \item \textbf{Zweck:} Dies ermöglicht den direkten Informationsfluss über Modalitätsgrenzen hinweg. Die Text-Tokens können gezielt Informationen aus den Tabellen-Features „abfragen“, die für den aktuellen Kontext relevant sind. Dies bildet das theoretische Fundament für die in dieser Arbeit entwickelten Fusions-Architekturen, da es eine flexible und dynamische Verknüpfung der heterogenen Datenräume erlaubt.
+\end{itemize}
+
+
+
+
+\subsection{Strategien der multimodalen Fusion}
+
+\subsubsection{Early Fusion}
+\subsubsection{Late Fusion}
+\subsubsection{Hybrid Fusion}
