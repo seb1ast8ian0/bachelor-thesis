@@ -4,9 +4,9 @@
 
 \subsubsection{Heterogenität in multimodalen Daten}
 
-Multimodale Daten, wie Texte und Tabellen, stellen eine Herausforderung dar, da jede Modalität eine eigene Struktur, Semantik und statistische Verteilung besitzt \cite{Baltrusaitis2017}. Textdaten sind sequenziell und linguistisch strukturiert, wobei Informationen über Tokens verteilt sind und Semantik aus Kontext und Reihenfolge entsteht. Im Gegensatz dazu sind tabellarische Daten attributbasiert und nicht-sequenziell; jedes Feature trägt eine explizite Bedeutung, und die Spaltenreihenfolge ist irrelevant.
+Multimodale Daten, wie Texte und Tabellen, stellen eine Herausforderung dar, da jede Modalität eine eigene Struktur, Semantik und statistische Verteilung besitzt \cite{Baltrusaitis2019}. Textdaten sind sequenziell und linguistisch strukturiert, wobei Informationen über Tokens verteilt sind und Semantik aus Kontext und Reihenfolge entsteht. Im Gegensatz dazu sind tabellarische Daten attributbasiert und nicht-sequenziell; jedes Feature trägt eine explizite Bedeutung, und die Spaltenreihenfolge ist irrelevant.
 
-Diese strukturellen Unterschiede führen zu einem „Manifold Mismatch“ \cite{Baltrusaitis2017, Huang2020}. Text wird in hochdimensionalen, kontinuierlichen Embedding-Räumen repräsentiert, während Tabulardaten aus heterogenen, unskalierten Merkmalen bestehen. Die geometrische Inkompatibilität dieser Räume verhindert, dass Attention-Mechanismen, die auf Text-Tokens effektiv angewendet werden können, direkt auf rohe Tabularfeatures funktionieren. Dies liegt daran, dass Tabularfeatures weder normalisiert sind noch eine Tokenstruktur oder semantische Distanz aufweisen.
+Diese strukturellen Unterschiede führen zu einem „Manifold Mismatch“ \cite{Baltrusaitis2019, Huang2020}. Text wird in hochdimensionalen, kontinuierlichen Embedding-Räumen repräsentiert, während Tabulardaten aus heterogenen, unskalierten Merkmalen bestehen. Die geometrische Inkompatibilität dieser Räume verhindert, dass Attention-Mechanismen, die auf Text-Tokens effektiv angewendet werden können, direkt auf rohe Tabularfeatures funktionieren. Dies liegt daran, dass Tabularfeatures weder normalisiert sind noch eine Tokenstruktur oder semantische Distanz aufweisen.
 
 Für eine sinnvolle Fusion von Text und Tabular in multimodalen Modellen ist daher eine Projektion in einen gemeinsamen Embedding-Space unerlässlich. Modelle müssen Mechanismen zur Harmonisierung der Skalen, zur Tokenisierung tabellarischer Merkmale und zur Erzeugung eines gemeinsamen semantischen Raums bereitstellen. Die Entwicklung solcher Mechanismen ist ein zentrales Thema in der Forschung zu multimodalen Modellen.
 
@@ -26,7 +26,7 @@ Historisch betrachtet basierten frühe Ansätze auf frequenzbasierten Verfahren 
 
 Einen signifikanten Fortschritt markierte die Einführung von verteilten Wortrepräsentationen (Word Embeddings), insbesondere durch das Word2Vec-Verfahren \cite{Mikolov2013}. Hierbei werden Wörter in einen dichten, niedrigdimensionalen Vektorraum projiziert, wobei diese Projektionen durch einfache neuronale Netze gelernt werden. Semantisch ähnliche Wörter liegen in diesem Vektorraum nahe beieinander. Ein wesentlicher Nachteil dieser statischen Embeddings besteht jedoch darin, dass jedem Wort unabhängig von seinem Kontext ein fixer Vektor zugewiesen wird. Polyseme Wörter, die je nach Satzkontext unterschiedliche Bedeutungen haben, können so nicht adäquat abgebildet werden.
 
-Um dieses Defizit zu beheben, wurden kontextuelle Embeddings entwickelt. Peters et al. stellten mit \Gls{elmo} einen Ansatz vor, der tiefere neuronale Netze nutzt, um kontextabhängige Wortvektoren zu generieren \cite{Peters2018}. Den aktuellen Standard setzen jedoch Transformer-basierte Modelle wie \Gls{bert} (Bidirectional Encoder Representations from Transformers), eingeführt von Devlin et al. \cite{Devlin2019}. Als Encoder-only-Modell wird \gls{bert} auf großen Textmengen vor-trainiert und erzeugt durch ein bidirektionales Training tiefgreifende kontextuelle Repräsentationen. Im Gegensatz zu \gls{elmo} basiert \gls{bert} auf der Transformer-Architektur und nutzt intensiv Self-Attention-Mechanismen, deren technische Details in Abschnitt \ref{sec:transformer_attention} erläutert werden.
+Um dieses Defizit zu beheben, wurden kontextuelle Embeddings entwickelt. Peters et al. stellten mit \Gls{elmo} einen Ansatz vor, der tiefere neuronale Netze nutzt, um kontextabhängige Wortvektoren zu generieren \cite{Peters2018}. Den aktuellen Standard setzen jedoch Transformer-basierte Modelle wie \Gls{bert}, eingeführt von Devlin et al. \cite{Devlin2019}. Als Encoder-only-Modell wird \gls{bert} auf großen Textmengen vor-trainiert und erzeugt durch ein bidirektionales Training tiefgreifende kontextuelle Repräsentationen. Im Gegensatz zu \gls{elmo} basiert \gls{bert} auf der Transformer-Architektur und nutzt intensiv Self-Attention-Mechanismen, deren technische Details in Abschnitt \ref{sec:transformer_attention} erläutert werden.
 
 Für die Verarbeitung ganzer Sätze oder Dokumente, wie sie in dieser Arbeit relevant ist, stoßen reine Token-Embeddings jedoch an Grenzen. Hier kommen Techniken wie Pooling oder die Verwendung spezieller Tokens ins Spiel. Insbesondere das \texttt{[CLS]}-Token (Classifier Token) in Modellen wie \gls{bert} wird häufig genutzt, um eine aggregierte Repräsentation des gesamten Satzes zu erhalten. Dieses spezielle Token wird jeder Eingabesequenz vorangestellt und sammelt während der Verarbeitung durch die Transformer-Schichten über Self-Attention kontextuelle Informationen des gesamten Inputs. Der finale Vektor des \texttt{[CLS]}-Tokens ($T_{[CLS]}$) dient somit als kompakte Repräsentation der gesamten Eingabe und wird in Klassifikationsaufgaben üblicherweise verwendet, um die Vorhersage zu treffen \cite{Devlin2019}. Während Modifikationen wie Sentence-BERT (SBERT) \cite{Reimers2019} darauf abzielen, semantisch aussagekräftige Satz-Embeddings zu erzeugen, liegt der Fokus dieser Arbeit auf der direkten Nutzung von \texttt{[CLS]}-Tokens für die Satzrepräsentation. Diese stabilen semantischen Kodierungen auf Satzebene schaffen die notwendige Voraussetzung, um Textinformationen effizient mit anderen Modalitäten, wie tabellarischen Merkmalen, in einer multimodalen Architektur zu fusionieren.
 
@@ -117,11 +117,58 @@ Für die Fusion unterschiedlicher Modalitäten, wie Text und Tabellendaten, ist 
     \item \textbf{Zweck:} Dies ermöglicht den direkten Informationsfluss über Modalitätsgrenzen hinweg. Die Text-Tokens können gezielt Informationen aus den Tabellen-Features „abfragen“, die für den aktuellen Kontext relevant sind. Dies bildet das theoretische Fundament für die in dieser Arbeit entwickelten Fusions-Architekturen, da es eine flexible und dynamische Verknüpfung der heterogenen Datenräume erlaubt.
 \end{itemize}
 
-
-
-
+\newpage
 \subsection{Strategien der multimodalen Fusion}
 
-\subsubsection{Early Fusion}
-\subsubsection{Late Fusion}
-\subsubsection{Hybrid Fusion}
+Multimodale Fusion bezeichnet den Prozess der Integration von Informationen aus verschiedenen Modalitäten, um eine gemeinsame Vorhersage (beispielsweise Klassifikation oder Regression) zu berechnen \cite{Li2024, Baltrusaitis2019}. Das Ziel ist es, die Stärken der einzelnen Datenquellen zu kombinieren und so eine leistungsfähigere Repräsentation zu schaffen, als es mit einer einzelnen Modalität möglich wäre.
+
+Die Notwendigkeit, Daten aus unterschiedlichen Quellen zu fusionieren, ergibt sich aus mehreren fundamentalen Vorteilen \cite{Li2024, Baltrusaitis2019}.
+Erstens bieten verschiedene Modalitäten oft komplementäre Informationen. Sie beobachten denselben Sachverhalt aus unterschiedlichen Perspektiven, wodurch Aspekte sichtbar werden, die in einer isolierten Betrachtung verborgen blieben \cite{Li2024, Baltrusaitis2019}.
+Zweitens erhöht die Fusion die Robustheit des Systems. Sollte eine Modalität verrauscht sein oder aufgrund von Sensorausfällen fehlen, können die verbleibenden Modalitäten die fehlenden Informationen kompensieren, was die Fehleranfälligkeit gegenüber unimodalen Ansätzen deutlich reduziert \cite{Baltrusaitis2019}.
+Ein kritischer Erfolgsfaktor ist dabei das sogenannte \textit{Alignment}. Damit die Fusion sinnvoll arbeitet, müssen die Modalitäten semantisch korrekt aufeinander abgebildet werden, etwa durch eine Projektion in einen gemeinsamen Repräsentationsraum. Ohne ein solches Alignment können falsche Zuordnungen entstehen, wodurch die fusionierte Darstellung inkonsistent wird \cite{Jiao2024, Li2024}.
+
+\subsubsection{Mechanismen der Fusion}
+
+Die technische Realisierung der Fusion, also \textit{wie} die Vektoren der unterschiedlichen Modalitäten zusammengeführt werden, kann durch verschiedene mathematische Operationen erfolgen \cite{Jiao2024, Baltrusaitis2019}.
+Ein zentrales Konzept ist hierbei die \textit{Joint Representation}. Das Ziel ist es, die unimodalen Eingangsvektoren in einen gemeinsamen semantischen Unterraum zu projizieren, um eine einzige, multimodale Repräsentation $Z$ zu erzeugen \cite{Jiao2024, Li2024}.
+Mathematisch lässt sich dieser Vorgang allgemein formulieren als:
+\begin{equation}
+    Z = f(X_{\text{text}}, X_{\text{tab}})
+\end{equation}
+Wobei $f$ eine Funktion darstellt (beispielsweise ein neuronales Netz oder eine deterministische Operation), die aus den unimodalen Repräsentationen $X_{\text{text}}$ und $X_{\text{tab}}$ die fusionierte multimodale Repräsentation $Z$ berechnet \cite{Baltrusaitis2019}.
+
+Zu den gängigsten spezifischen Operationen zählen:
+
+\paragraph{Concatenation (Verkettung)}
+Dies ist die wohl einfachste Form der Fusion, bei der die Merkmalsvektoren lediglich hintereinander gehängt werden:
+\begin{equation}
+    Z = [X_{\text{text}}, X_{\text{tab}}]
+\end{equation}
+Ein wesentlicher Vorteil ist, dass die Eingangsvektoren $X_{\text{text}}$ und $X_{\text{tab}}$ nicht dieselbe Dimension besitzen müssen. Die Dimension des Ergebnisvektors $Z$ entspricht der Summe der Einzeldimensionen. In der Literatur wird dieser Ansatz oft als „Early Fusion“ bezeichnet, wenn er direkt auf der Ebene der Eingangsmerkmale angewendet wird \cite{Baltrusaitis2019}.
+
+\paragraph{Addition (Summierung)}
+Hierbei werden die Vektoren elementweise addiert:
+\begin{equation}
+    Z = X_{\text{text}} + X_{\text{tab}}
+\end{equation}
+Dies setzt zwingend voraus, dass beide Vektoren dieselbe Dimension aufweisen, weshalb oft eine vorherige Projektion notwendig ist. Diese Methode ist besonders in Joint-Representation-Ansätzen verbreitet \cite{Jiao2024}.
+
+\paragraph{Attention-Mechanismen}
+Im Gegensatz zu statischen Operationen wie der Addition oder Verkettung erlauben Attention-Mechanismen eine dynamische Gewichtung der Features.
+Besonders relevant ist die \textit{Cross-Attention}. Hierbei können Repräsentationen einer Zielmodalität (z.\,B. Text) gezielt Informationen aus einer Quellmodalität (z.\,B. Tabelle) abfragen. Typischerweise stammen dabei die \textit{Queries} aus der Zielmodalität, während \textit{Keys} und \textit{Values} aus der Quellmodalität geliefert werden. Dies ermöglicht eine gewichtete Aggregation von Informationen, die auf den aktuellen Kontext konditioniert ist, und erlaubt die Modellierung komplexer Abhängigkeiten über Modalitätsgrenzen hinweg \cite{Li2024}.
+
+\subsubsection{Architekturen und Positionierung der Fusion}
+
+Neben der Art der Operation ist entscheidend, \textit{an welcher Stelle} im Modellfluss die Fusion stattfindet. Traditionell wird hierbei zwischen Early, Late und Hybrid Fusion unterschieden, wobei moderne Deep-Learning-Architekturen diese Grenzen zunehmend aufweichen \cite{Jiao2024, Li2024, Baltrusaitis2019}.
+
+\paragraph{Early Fusion (Daten- und Feature-Ebene)}
+Bei der Early Fusion findet die Integration unmittelbar nach der Extraktion der Merkmale oder sogar schon auf Ebene der Rohdaten statt, bevor diese die tieferen Schichten des Modells durchlaufen \cite{Jiao2024, Li2024, Baltrusaitis2019}. Oft wird ein gemeinsamer Modellzweig (One-Tower-Architektur) verwendet, um die kombinierten Eingaben gemeinsam zu verarbeiten \cite{Li2024}.
+Der Vorteil dieses Ansatzes liegt darin, dass Korrelationen und Interaktionen zwischen den „Low-Level“-Merkmalen sehr früh gelernt werden können \cite{Baltrusaitis2019}. Nachteilig ist jedoch die hohe Anforderung an die Synchronisation der Daten. Bei sehr heterogenen Modalitäten kann eine gemeinsame frühe Verarbeitung die Modellierung erschweren \cite{Jiao2024}.
+
+\paragraph{Late Fusion (Entscheidungs- und Ausgabe-Ebene)}
+Hier erfolgt die Integration erst am Ende des Modells. Jede Modalität wird zunächst in einem eigenen Zweig (Two-Tower-Architektur) verarbeitet \cite{Li2024}. Die resultierenden High-Level-Repräsentationen werden anschließend fusioniert, beispielsweise durch ein Voting-Schema, Mittelwertbildung oder ein nachgeschaltetes MLP \cite{Baltrusaitis2019}.
+Dies bietet hohe Flexibilität, da für jede Modalität spezialisierte Modelle verwendet werden können, und erleichtert den Umgang mit fehlenden Daten \cite{Baltrusaitis2019}. Allerdings werden bei der Late Fusion potenzielle Interaktionen auf niedrigerer Ebene ignoriert. Fehlerhafte Daten in einer Modalität können das Endergebnis direkt negativ beeinflussen, da keine frühe Korrektur durch die andere Modalität möglich ist \cite{Baltrusaitis2019}.
+
+\paragraph{Hybrid und Deep Fusion}
+Hybride Ansätze versuchen, die Vorteile beider Welten zu kombinieren \cite{Jiao2024, Baltrusaitis2019}. Bei der \textit{Deep Fusion} oder Feature-Level Fusion geschieht die Integration nicht nur am Anfang oder Ende, sondern auch in den Zwischenschichten des Modells \cite{Jiao2024}. Dies wird oft durch eine „Two-Leg“-Struktur realisiert, bei der eine zusätzliche Fusionskomponente auf zwei separaten Verarbeitungszweigen aufsetzt \cite{Li2024}.
+Moderne Transformer-basierte Ansätze treiben dies noch weiter: Durch Mechanismen wie Cross-Attention in jeder Schicht interagieren die Modalitäten kontinuierlich über die gesamte Tiefe des Modells hinweg \cite{Li2024}. Dies ermöglicht eine deutlich tiefere Integration als einfache Kombinationen.
