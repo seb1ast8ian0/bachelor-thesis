@@ -1,1 +1,40 @@
 \section{Verwandte Arbeiten}
+\label{sec:related_work}
+
+Das Feld des multimodalen Lernens hat durch die Adaption der Transformer-Architektur signifikante Fortschritte erzielt. Während die Kombination von Bild und Text (Vision-Language Models) bereits etablierte Standards für die Fusion mittels Cross-Attention hervorgebracht hat, ist die gemeinsame Verarbeitung von tabellarischen Daten und Text ein jüngeres und weniger standardisiertes Forschungsfeld. Dieses Kapitel ordnet die Arbeit in den aktuellen Forschungsstand ein, differenziert zwischen generellen Fusions-Architekturen und spezifischen Ansätzen für Tabellen und stellt den im Unternehmenskontext relevanten Benchmark vor.
+
+\subsection{Cross-Attention in multimodalen Transformer-Architekturen}
+Die effektivste Methode zur Fusion heterogener Datenströme in modernen neuronalen Netzen ist der Einsatz von Cross-Attention-Mechanismen. Diese ermöglichen es einem Modell, Informationen einer Modalität dynamisch in den Kontext einer anderen zu integrieren, ohne die ursprüngliche Struktur der Daten frühzeitig aufzulösen.
+
+Im Bereich Vision-Language zeigt \textbf{LXMERT} \cite{Tan2019}, wie effektiv eine Dual-Stream-Architektur sein kann: Bild- und Textdaten werden zunächst von separaten Encodern verarbeitet, bevor sie in einem dedizierten Cross-Modality-Encoder fusioniert werden. Dies verhindert den Informationsverlust, der bei einer zu frühen einfachen Konkatenation (Early Fusion) auftreten kann.
+Einen Schritt weiter geht \textbf{Flamingo} \cite{Alayrac2022}, ein Modell für Few-Shot-Learning. Anstatt ein neues Modell von Grund auf zu trainieren, injiziert Flamingo visuelle Informationen über \textit{Gated Cross-Attention-Dense}-Schichten in ein eingefrorenes Sprachmodell. Dies belegt die Flexibilität von Cross-Attention als Mechanismus zur späten, aber tiefen Integration von Zusatzinformationen. Auch neuere Modelle wie \textbf{PaLI} \cite{Chen2023} bestätigen, dass diese dynamische Interaktion einfacheren (statischen) Fusionsmethoden überlegen ist, wenn komplexe semantische Korrelationen erfasst werden müssen.
+
+\subsection{Verarbeitung von Tabellen und Text mit Transformern}
+Die Übertragung dieser Konzepte auf tabellarische Daten stellt aufgrund der in Abschnitt \ref{sec:heterogeneity} beschriebenen fehlenden Sequenzialität eine Herausforderung dar.
+
+Der \textbf{TabTransformer} \cite{Huang2020} lieferte den fundamentalen Nachweis, dass Transformer-Encoder effektiv auf kategoriale Daten anwendbar sind, indem Features als individuelle Tokens betrachtet werden (Feature Tokenization). Obwohl er Text ignoriert, etablierte er die Basis für spaltenweise Attention.
+Für die Verbindung mit Text wählt \textbf{TaBERT} \cite{Yin2020} einen Ansatz der Linearisierung: Tabellenzeilen werden in text-ähnliche Sequenzen umgewandelt und gemeinsam mit natürlicher Sprache durch ein BERT-Modell verarbeitet. Dies entspricht einer Early Fusion, bei der die modalitätsspezifische Struktur teilweise verschwimmt.
+
+Neuere Untersuchungen im \textbf{Multimodal-Toolkit} \cite{Gu2021} und von Bonnier et al. \cite{Bonnier2024} vergleichen verschiedene Architekturen systematisch. Bonnier et al. stellen fest, dass spezialisierte multimodale Architekturen in der Praxis oft nur marginale Verbesserungen gegenüber starken Baselines (wie der bloßen Konkatenation von Text- und Tabellen-Features) erzielen, wenn die unimodalen Repräsentationen nicht sorgfältig abgestimmt sind. Dies unterstreicht die Notwendigkeit, Fusionsmechanismen nicht nur theoretisch, sondern auch empirisch gegen robuste Standards zu validieren.
+
+\paragraph{Industrieller Benchmark: CrossFitter Stacking}
+\label{sec:crossfitter}
+Im Unternehmenskontext dieser Arbeit dient die interne Modellarchitektur „CrossFitter“ als relevante Baseline. Im Gegensatz zu den oben genannten End-to-End-Architekturen handelt es sich hierbei um einen zweistufigen Stacking-Ansatz, der die Stärken spezialisierter Modelle kombiniert, ohne dass diese in einem gemeinsamen, durchgängig trainierbaren Modell vereint sind.
+
+Das Verfahren nutzt ein \textbf{2-Fold-Cross-Prediction-Schema}, um Textinformationen für ein tabellarisches Modell nutzbar zu machen:
+\begin{enumerate}
+    \item Die Trainingsdaten werden in zwei Folds (A und B) unterteilt.
+    \item Ein BERT-Modell wird auf Fold A trainiert und generiert Vorhersagen für Fold B (Out-of-Sample Predictions).
+    \item Analog wird ein zweites BERT-Modell auf Fold B trainiert, um Vorhersagen für Fold A zu erstellen.
+\end{enumerate}
+Die resultierenden Wahrscheinlichkeitswerte (Scores) des Textmodells werden anschließend als zusätzliches Feature gemeinsam mit den ursprünglichen strukturierten Daten in ein Gradient-Boosting-Modell (LGBM) eingespeist. Dieser Ansatz ist in der Praxis äußerst robust und performant, besitzt jedoch eine theoretische Limitierung: Es findet keine direkte Interaktion der Features während des Trainings statt. Das Textmodell erhält kein Feedback von den Tabellendaten und kann seine Repräsentation nicht an den Kontext der strukturierten Attribute anpassen.
+
+\newpage
+\subsection{Forschungslücke und Einordnung}
+Die Analyse der verwandten Arbeiten zeigt eine deutliche Zweiteilung der aktuellen Forschungslandschaft:
+\begin{itemize}
+    \item Auf der einen Seite existieren hochentwickelte \textbf{Cross-Attention-Architekturen} für Bild und Text (Flamingo), die eine tiefe Interaktion der Modalitäten ermöglichen.
+    \item Auf der anderen Seite dominieren im Bereich Tabelle und Text oft noch Ansätze der Linearisierung (TaBERT) oder das in der Industrie bewährte \textbf{Stacking} (CrossFitter).
+\end{itemize}
+
+Es besteht eine Forschungslücke in der Übertragung der erfolgreichen Cross-Attention-Konzepte aus der Vision-Language-Domäne auf das Tabular-Text-Problem. Während TabTransformer zeigt, wie man Tabellen „tokenisiert“, fehlt oft der Schritt, diese Tabellen-Tokens dynamisch mit Text-Tokens interagieren zu lassen. Die vorliegende Arbeit untersucht daher eine Architektur der \textit{Hybrid Fusion} mittels Cross-Attention. Ziel ist es zu prüfen, ob die direkte, differenzierbare Interaktion der Modalitäten einen messbaren Mehrwert gegenüber dem robusten, aber statischen Stacking-Ansatz des CrossFitters bietet.
