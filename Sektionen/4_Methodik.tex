@@ -1,1 +1,150 @@
 \section{Methodik}
+\label{sec:methodik}
+
+In diesem Kapitel wird das methodische Vorgehen dieser Arbeit detailliert beschrieben. Ziel ist es, die Entwicklung der CrossBERT-Architektur, die zugrunde liegende Datenbasis sowie das experimentelle Setup so darzustellen, dass die Ergebnisse und Diskussionen für den Leser vollständig nachvollziehbar sind.
+
+\subsection{Datenbasis und Vorverarbeitung}
+\label{sec:data_basis}
+
+Die Qualität der Eingangsdaten ist entscheidend für multimodale Deep-Learning-Verfahren. Diese Arbeit nutzt einen hybriden Ansatz aus proprietären Versicherungsdaten und öffentlichen Benchmarks, die eine standardisierte Pipeline durchlaufen, um die Modalitäten für Transformer-Modelle aufzubereiten.
+
+\subsubsection{Datenbasis}
+Der primäre Datensatz stammt von einem deutschen Versicherungsunternehmen und dient der Identifikation von Regresspotenzialen (Rückforderungen von Dritten). Er kombiniert unstrukturierte Schadenbeschreibungen (Text) mit strukturierten Merkmalen wie Sparte, Vertragsart und Schadenshöhe (Tabelle). Ein konkretes Beispiel für die Beschaffenheit dieser Daten ist in Tabelle \ref{tab:sample_case} dargestellt. Die Nutzung dieser Echtdaten birgt zwei zentrale Herausforderungen: Ein \textit{Selection Bias} entsteht, da nur manuell vorselektierte Fälle gelabelt sind, während ungeprüfte Fälle ein \textit{Missing Label Problem} aufweisen. Für diese ungelabelten Fälle wird initial die Annahme getroffen, dass kein Regresspotenzial vorliegt (Label 0), was eine konservative Schätzung darstellt. Das Modell wird somit auf dem gesamten verfügbaren Datensatz trainiert, wobei die implizite Unsicherheit der angenommenen Labels eine besondere Herausforderung für die Generalisierungsfähigkeit darstellt.
+
+\begin{table}[ht]
+    \centering
+    \small
+    \renewcommand{\arraystretch}{1.3}
+    \caption{Beispiel eines Datensatzes der internen Regressdatenbasis.}
+    \label{tab:sample_case}
+    \begin{tabular}{@{}lp{0.75\textwidth}@{}}
+        \hline
+        \textbf{Metadaten} & ID: 68443XXXX, Label: 1 (Regress), Is Labeled: 1 (True)\\
+        \hline
+        \textbf{Textmodalität} & \textit{Schadenhergang:} VN: Kreuzung: Vn hatte grünen Pfeil der aufgeleuchtet sei. Es kam zur Kollision Vorgang strittig. \textit{Dokumente:} ausführliche HSA, strittige Ampel, PUM, EA-Geb-re io. \textit{Notizen:} PWS empfiehlt Beauftragung eines SV; ADAC bereits auf dem Weg; wst wartet auf fg... \\
+        \hline
+        \textbf{Tabellarische Merkmale} & \texttt{log\_zlg\_fzg}: 9,839, \texttt{kh\_other\_partially\_paid}: 1, \texttt{untersparte}: KF.VK, \texttt{risikoschluessel}: UNF, \texttt{svorg\_schadenursache}: Unfall ein weiteres Kfz, \texttt{had\_ever\_erinnerungsregress}: 1 \\
+        \hline
+    \end{tabular}
+\end{table}
+
+Zur Validierung und Sicherstellung der Domänenunabhängigkeit dienen zwei Kaggle-Benchmarks: \textit{Women's E-Commerce Clothing Reviews} \cite{KaggleEcommerce} für binäre Klassifikation (Empfehlung ja/nein) und \textit{PetFinder.my Adoption Prediction} \cite{KagglePetfinder} für Multi-Class-Klassifikation (Adoptionsgeschwindigkeit). Beide kombinieren Nutzer- bzw. Tierbeschreibungen mit tabellarischen Metadaten und erlauben so eine objektive Evaluation der Cross-Attention-Mechanismen unter kontrollierten Bedingungen.
+
+\subsubsection{Datenvorverarbeitung}
+Die Vorverarbeitung überführt Rohdaten in numerische Tensoren. Tabellarische kategoriale Merkmale werden mittels One-Hot-Encoding kodiert, wobei fehlende Werte als eigene Kategorie \texttt{None} erhalten bleiben. Numerische Variablen werden per Min-Max-Skalierung auf das Intervall $[0, 1]$ normalisiert, um numerische Stabilität beim Gradientenabstieg zu gewährleisten.
+
+Textdaten werden mit einem vortrainierten \texttt{bert-base-uncased} Tokenizer verarbeitet. Dies umfasst Lowercasing, WordPiece-Tokenisierung zur Reduktion von OOV-Problemen sowie das Hinzufügen von \texttt{[CLS]} und \texttt{[SEP]} Token. Alle Sequenzen werden auf eine fixe Länge von 512 Token (Padding/Truncation) normiert. Um dem Klassenungleichgewicht der Regressdaten zu begegnen, wird ein Random Undersampling der Majoritätsklasse (\texttt{train\_imbalance\_0\_to\_1}) sowie eine stratifizierte Aufteilung in Trainings-, Validierungs- und Testmengen angewendet, um die Repräsentativität der Zielklassen zu wahren.
+
+\newpage
+\subsection{Baseline-Modelle}
+\label{sec:baselines}
+
+Um den Mehrwert der entwickelten CrossBERT-Architektur präzise zu quantifizieren, erfolgt ein Vergleich mit zwei etablierten multimodalen Fusionsstrategien: SumBERT (Early Fusion) und ConcatBERT (Late Fusion). Beide Baselines verwenden denselben \texttt{bert-base-uncased}-Encoder sowie identische Datenvorverarbeitungsschritte, unterscheiden sich jedoch grundlegend im Zeitpunkt der Informationszusammenführung. Der vollständige Quellcode beider Implementierungen befindet sich in Anhang \ref{app:source_code_baselines}.
+
+\subsubsection{SumBERT (Early Fusion)}
+Der SumBERT-Ansatz realisiert eine frühe Fusion, bei der die Tabelleninformationen bereits vor dem Encoding-Prozess in den Modellkontext integriert werden. Hierfür werden die normalisierten und kodierten Tabellendaten zunächst mittels einer linearen Projektionsschicht (\texttt{nn.Linear}) in den Vektorraum des Sprachmodells projiziert ($H=768$). Dieser projizierte Vektor wird anschließend elementweise zum Embedding des \texttt{[CLS]}-Tokens addiert, noch bevor die Sequenz den ersten Transformer-Layer erreicht (siehe Abbildung \ref{fig:sumbert}).
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.9\textwidth]{Bilder/SumBERT_Modellarchitektur.png}
+    \caption{Architektur von SumBERT: Addition der Tabellen-Repräsentation zum CLS-Token-Embedding vor dem Encoder.}
+    \label{fig:sumbert}
+\end{figure}
+
+Formal lässt sich die Berechnung des fusionierten Eingabevektors wie folgt beschreiben:
+\begin{equation}
+    E_{\text{fused}}^{[CLS]} = E_{\text{text}}^{[CLS]} + \text{MLP}_{\text{tab}}(X_{\text{tab}})
+\end{equation}
+
+Durch diese additive Verknüpfung am Eingang fungiert das \texttt{[CLS]}-Token als globaler Träger multimodaler Informationen, die über den Self-Attention-Mechanismus in alle tieferen Schichten des Modells propagiert werden.
+
+\newpage
+\subsubsection{ConcatBERT (Late Fusion)}
+Im Gegensatz dazu verfolgt ConcatBERT einen Ansatz der späten Fusion. Text- und Tabellendaten werden hierbei zunächst separat verarbeitet. Der Text durchläuft den vollständigen BERT-Encoder, um eine kontextualisierte Repräsentation des \texttt{[CLS]}-Tokens zu generieren. Erst im Anschluss an den Encoding-Prozess wird dieser Vektor mit den rohen bzw. leicht vorverarbeiteten Tabellen-Features konkateniert (siehe Abbildung \ref{fig:concatbert}).
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.9\textwidth]{Bilder/ConcatBERT_Modellarchitektur.png}
+    \caption{Architektur von ConcatBERT: Konkatenation der Tabellen-Features mit dem Output des BERT-Encoders.}
+    \label{fig:concatbert}
+\end{figure}
+
+Der resultierende Vektor dient als Eingabe für den Klassifikations-Head:
+\begin{equation}
+    h_{\text{fusion}} = [ \text{BERT}(E_{\text{text}})_{[CLS]} \parallel X_{\text{tab}} ]
+\end{equation}
+
+Diese Architektur ist rechnerisch effizient und leicht zu implementieren, verhindert jedoch eine tiefe Interaktion zwischen den Modalitäten während der Feature-Extraktion, da die Tabellendaten den Self-Attention-Mechanismus des Transformers nicht durchlaufen.
+
+\newpage
+\subsection{CrossBERT-Architektur}
+\label{sec:crossbert_architecture}
+
+Das Kernstück dieser Arbeit ist die CrossBERT-Architektur, die eine tiefe Interaktion zwischen Text und Tabellen über Cross-Attention ermöglicht.
+
+\subsubsection{TabularTokenizer}
+Um einen fairen Vergleich zu den Baselines zu ermöglichen, bleibt der grundlegende Tokenizer-Ansatz vergleichbar, wird jedoch für die Cross-Attention erweitert.
+\begin{itemize}
+    \item \textbf{Funktionsweise:} Ein MLP projiziert die vorverarbeiteten tabellarischen Daten in einen hochdimensionalen Raum ($H=768$).
+    \item \textbf{N-Vektoren-Projektion:} Im Gegensatz zu herkömmlichen Methoden erzeugt der Tokenizer nicht einen einzelnen aggregierten Vektor, sondern eine Sequenz von $N$ Vektoren.
+    \item \textbf{Vorteil:} Dies erlaubt dem Modell, unterschiedliche Aspekte der tabellarischen Daten in separaten Repräsentationen zu lernen. In der Cross-Attention-Schicht kann das Modell diese verschiedenen Bedeutungen gezielt gewichten und adressieren.
+\end{itemize}
+
+\subsubsection{Fusionsstrategien: Early, Late und Hybrid}
+Es werden drei verschiedene Integrationszeitpunkte untersucht:
+\begin{itemize}
+    \item \textbf{Early Fusion:} Die Zusammenführung der Modalitäten erfolgt bereits vor dem Eintritt in den Transformer-Encoder.
+    \item \textbf{Late Fusion:} Die Modalitäten werden erst nach der vollständigen Enkodierung fusioniert.
+    \item \textbf{Hybrid Fusion:} Eine Kombination beider Ansätze, bei der Informationen sowohl früh als auch spät im Modellverlauf ausgetauscht werden.
+\end{itemize}
+
+\subsubsection{Cross-Attention Mechanismus}
+Hier wird die mathematische Umsetzung der Attention-Schichten (Query, Key, Value) im Kontext der multimodalen Interaktion detailliert formalisiert.
+
+\newpage
+\subsection{Trainings-Setup und Evaluationsmetriken}
+\label{sec:training_setup}
+
+Für eine wissenschaftliche Vergleichbarkeit werden alle Experimente unter identischen Rahmenbedingungen durchgeführt.
+
+\subsubsection{Hyperparameter und Strategie}
+\begin{itemize}
+    \item \textbf{Modell-Basis:} Als Transformer-Encoder und Text-Tokenizer wird einheitlich \texttt{bert-base-uncased} verwendet.
+    \item \textbf{Optimierung:} Details zum Optimizer (z. B. AdamW), der Learning-Rate-Strategie (Scheduler) und der Batchgröße.
+    \item \textbf{Training:} Festlegung der Epochenanzahl, des Early-Stopping-Kriteriums sowie der Anzahl der Seed-Replikationen zur Sicherstellung der statistischen Signifikanz.
+\end{itemize}
+
+\subsubsection{Validierung und Hardware}
+\begin{itemize}
+    \item \textbf{Validierungs-Schema:} Beschreibung des Splits (z. B. 5-Fold Cross-Validation oder fester Train/Val/Test-Split).
+    \item \textbf{Infrastruktur:} Verwendete Hardware (GPUs), Einsatz von Mixed-Precision-Training zur Effizienzsteigerung.
+\end{itemize}
+
+\subsubsection{Evaluationsmetriken}
+Neben klassischen Machine-Learning-Metriken (F1-Score, AUC) werden spezifische ökonomische Kennzahlen betrachtet:
+\begin{itemize}
+    \item \textbf{Expected Savings:} Berechnung der erwarteten Einsparungen basierend auf den Modellvorhersagen.
+    \item \textbf{Spearman-Korrelation:} Begründung für den Einsatz dieser Metrik zur Bewertung der Rangfolge-Stabilität.
+\end{itemize}
+
+\newpage
+\subsection{Ablationsstudien}
+\label{sec:ablations}
+
+Um den Einfluss einzelner Architektur-Entscheidungen systematisch zu verstehen, werden gezielte Ablationsstudien durchgeführt.
+
+\begin{table}[h]
+\centering
+\caption{Übersicht der geplanten Ablationsstudien}
+\label{tab:ablations_overview}
+\begin{tabular}{|l|l|l|l|l|}
+\hline
+\textbf{Ablation} & \textbf{Variable} & \textbf{Wertebereich} & \textbf{Metriken} & \textbf{Ziel} \\ \hline
+Tokenizer & TabTokenizer V1 vs. V2 & - & F1, AUC & Einfluss der Projektion \\ \hline
+Gating & Mit vs. Ohne Gating & - & F1, AUC & Nutzen dynamischer Fusion \\ \hline
+Tokens & Tab Token Count & 1, 4, 8, 16 & Rechenzeit, F1 & Optimale Granularität \\ \hline
+Modalität & Text-only vs. Multi & - & Savings & Mehrwert der Tabellen \\ \hline
+\end{tabular}
+\end{table}
+
+In den folgenden Unterabschnitten werden die spezifischen Anpassungen für den \textit{TabTokenizerV2}, verschiedene \textit{Gating}-Mechanismen und die Variation des \textit{Tab Token Counts} im Detail erläutert.

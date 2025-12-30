@@ -68,7 +68,7 @@ Hinsichtlich der Struktur der erzeugten Sequenz lassen sich zwei Hauptstrategien
 
 Der erste Ansatz, bekannt als \textbf{Feature Tokenization} (oder Column-wise Embeddings), bildet jedes Feature der Ursprungstabelle isoliert auf genau einen Token-Vektor ab. Dies wird beispielsweise im \textit{TabTransformer} \cite{Huang2020} oder im \textit{SAINT}-Modell \cite{Somepalli2021} angewendet. Die Sequenzlänge $N$ entspricht hierbei exakt der Anzahl der Spalten. Der Vorteil liegt in der Erhaltung der feingranularen Information jedes einzelnen Features.
 
-Der zweite Ansatz, der in dieser Arbeit Anwendung findet, verfolgt eine \textbf{globale Projektion} (Row-level Tokenization). Hierbei werden alle Features einer Zeile zunächst konkateniert und gemeinsam durch ein MLP geleitet, um eine Sequenz von latenten Tokens zu erzeugen, die nicht mehr zwangsläufig 1-zu-1 den ursprünglichen Spalten entsprechen \cite{Gu2021}. Dies ermöglicht eine Entkopplung der Sequenzlänge von der Anzahl der Eingabefeatures und kann die Rechenkomplexität in der nachfolgenden Attention-Schicht reduzieren. Entscheidend ist hierbei, dass das Modell bereits in der Tokenization-Phase globale Zusammenhänge zwischen den Features aggregieren kann, anstatt sie isoliert zu betrachten.
+Der zweite Ansatz, der in dieser Arbeit auch Anwendung findet, verfolgt eine \textbf{globale Projektion} (Row-level Tokenization). Hierbei werden alle Features einer Zeile zunächst konkateniert und gemeinsam durch ein MLP geleitet, um eine Sequenz von latenten Tokens zu erzeugen, die nicht mehr zwangsläufig 1-zu-1 den ursprünglichen Spalten entsprechen \cite{Gu2021}. Dies ermöglicht eine Entkopplung der Sequenzlänge von der Anzahl der Eingabefeatures und kann die Rechenkomplexität in der nachfolgenden Attention-Schicht reduzieren. Entscheidend ist hierbei, dass das Modell bereits in der Tokenization-Phase globale Zusammenhänge zwischen den Features aggregieren kann, anstatt sie isoliert zu betrachten.
 
 Unabhängig von der gewählten Methode ist das Ergebnis dieser Transformation eine Sequenz dichter Vektoren. Erst durch diesen Schritt wird die „Sprache“ der Tabelle in die „Sprache“ des Transformers übersetzt, was die Basis für die in dieser Arbeit untersuchte multimodale Fusion mittels Cross-Attention bildet.
 
@@ -133,7 +133,7 @@ Zu den gängigsten spezifischen Operationen zählen:
 \paragraph{Concatenation (Verkettung)}
 Dies ist die wohl einfachste Form der Fusion, bei der die Merkmalsvektoren lediglich hintereinander gehängt werden:
 \begin{equation}
-    Z = [X_{\text{text}}, X_{\text{tab}}]
+    Z = [X_{\text{text}} \parallel X_{\text{tab}}]
 \end{equation}
 Ein wesentlicher Vorteil ist, dass die Eingangsvektoren $X_{\text{text}}$ und $X_{\text{tab}}$ nicht dieselbe Dimension besitzen müssen. Die Dimension des Ergebnisvektors $Z$ entspricht der Summe der Einzeldimensionen. In der Literatur wird dieser Ansatz oft als „Early Fusion“ bezeichnet, wenn er direkt auf der Ebene der Eingangsmerkmale angewendet wird \cite{Baltrusaitis2019}.
 

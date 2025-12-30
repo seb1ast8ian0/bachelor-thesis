@@ -1,0 +1,150 @@
+class ConcatBert(BertForSequenceClassification):
+    """Custom BERT that handles numerical and one-hot encoded categorical data by concatenating it to the output embedding
+    of the CLS token.
+
+    Attributes:
+    ----------
+    classifier: ClassificationHead
+        A classification module that is identical to the one in BertForSequenceClassification, except for added input dimensions from the numerical data.
+
+    Methods:
+    ---------
+    forward(...):
+        Takes in input ids, attention mask, and a tensor of extra data to compute the binary output. Input ids and attention mask are first fed through the base bert model.
+        The resulting CLS context embedding is then concatenated to the extra data tensor and fed through the classificationHead to get the final output.
+    """
+
+    def __init__(self, cfg: BertConfig, extra_data_dim: int, hidden_dim: int):
+        super().__init__(cfg)
+
+        class ClassificationHead(nn.Module):
+            """Head for sentence-level classification tasks."""
+
+            def __init__(self, cfg, extra_data_dim, hidden_dim):
+                super().__init__()
+                total_dims = cfg.hidden_size + extra_data_dim
+                assert (
+                    hidden_dim <= total_dims
+                ), "The hidden dim should be less or equal than the input embedding"
+                self.dense = nn.Linear(total_dims, hidden_dim)
+                self.bn1 = nn.BatchNorm1d(hidden_dim)
+                classifier_dropout = (
+                    cfg.classifier_dropout
+                    if cfg.classifier_dropout is not None
+                    else cfg.hidden_dropout_prob
+                )
+                self.dropout = nn.Dropout(classifier_dropout)
+                self.out_proj = nn.Linear(hidden_dim, cfg.num_labels)
+
+            def forward(self, features, **kwargs):
+                x = self.dropout(features)
+                x = self.dense(x)
+                x = self.bn1(x)
+                x = torch.relu(x)
+                x = self.dropout(x)
+                x = self.out_proj(x)
+                return x
+
+        self.classifier = ClassificationHead(cfg, extra_data_dim, hidden_dim)
+        # https://tfs/web/DefaultCollection/GIT_Projects/_git/hf4-regress-exploration/pullRequest/81216#1737385342
+        self.post_init()
+
+    def forward(
+        self,
+        input_ids: torch.Tensor | None = None,
+        attention_mask: torch.Tensor | None = None,
+        token_type_ids: torch.Tensor | None = None,
+        position_ids: torch.Tensor | None = None,
+        head_mask: torch.Tensor | None = None,
+        inputs_embeds: torch.Tensor | None = None,
+        labels: torch.Tensor | None = None,
+        output_attentions: bool | None = None,
+        output_hidden_states: bool | None = None,
+        return_dict: bool | None = None,
+        extra_data: torch.Tensor | None = None,
+    ) -> tuple | SequenceClassifierOutput:
+
+        return_dict = (
+            return_dict if return_dict is not None else self.config.use_return_dict
+        )
+
+        outputs = self.bert(
+            input_ids,
+            attention_mask=attention_mask,
+            token_type_ids=token_type_ids,
+            position_ids=position_ids,
+            head_mask=head_mask,
+            inputs_embeds=inputs_embeds,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+        # Using the pooler output as document embedding. This corresponds
+        # to a post-processed version of the <CLS> token embedding.
+        cls_embedding = outputs.pooler_output
+
+        if extra_data is not None:
+            output = torch.cat((cls_embedding, extra_data), dim=-1)
+        else:
+            raise ValueError("Must supply extra data!")
+        logits = self.classifier(output)
+        if not return_dict:
+            output = (logits,) + outputs[2:]
+            return output
+
+        return SequenceClassifierOutput(
+            logits=logits,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )
+
+class SumBert(BertForSequenceClassification):
+    """
+    SumBert integrates additional feature-embeddings with a BERT base model used for a classification task.
+
+    Parameters
+    ----------
+    feature_layer:
+      Linear layer used to add the numerical and categorical data to the word embedding of the CLS token.
+
+    Methods
+    ---------
+    forward(...):
+        Gets word embeddings from input ids through bert. The adds the output of its feature layer to the CLS word embedding to insert numerical / categorical data.
+        Subsequently uses BertModels forward function to get outputs.
+    """
+
+    def __init__(self, cfg: BertConfig, extra_data_dim: int):
+        super().__init__(cfg)
+        self.feature_layer = nn.Linear(extra_data_dim, 768)
+
+    def forward(
+        self,
+        input_ids: torch.Tensor | None = None,
+        attention_mask: torch.Tensor | None = None,
+        token_type_ids: torch.Tensor | None = None,
+        position_ids: torch.Tensor | None = None,
+        head_mask: torch.Tensor | None = None,
+        inputs_embeds: torch.Tensor | None = None,
+        labels: torch.Tensor | None = None,
+        output_attentions: bool | None = None,
+        output_hidden_states: bool | None = None,
+        return_dict: bool | None = None,
+        extra_data: torch.Tensor | None = None,
+    ):
+        # Avoid performing computation under torch.no_grad() to ensure
+        # word embeddings can be updated during training.
+        text_embedding = self.bert.embeddings.word_embeddings(input_ids)
+        text_embedding[:, 0] += self.feature_layer(extra_data)
+        outputs = self.bert(
+            inputs_embeds=text_embedding,
+            attention_mask=attention_mask,
+        )
+        pooled_output = outputs.pooler_output
+        pooled_output = self.dropout(pooled_output)
+        logits = self.classifier(pooled_output)
+        return SequenceClassifierOutput(
+            logits=logits,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )

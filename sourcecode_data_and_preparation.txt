@@ -1,0 +1,1330 @@
+import logging
+from typing import Any
+
+import numpy as np
+import pandas as pd
+import torch
+from lightning import LightningDataModule
+from omegaconf import DictConfig
+from sklearn.compose import ColumnTransformer
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import MinMaxScaler, OneHotEncoder
+from torch.utils.data import DataLoader, Dataset, TensorDataset
+from tqdm import tqdm
+from transformers import AutoTokenizer, BertTokenizer, PreTrainedTokenizerFast
+
+from hf4_regress_exploration.model.steps.bert_funcs import mask_positive_samples
+from hf4_regress_exploration.model.steps.common_funcs import (
+    log_dataset_mlflow,
+    read_data,
+)
+from hf4_regress_exploration.model.steps.helper_classes import (
+    BasicDataset,
+    ModelData,
+    SplitDataset,
+    TokenizationAnalysis,
+)
+from hf4_regress_exploration.model.steps.mlflow import (
+    get_propensities,
+    log_tokenization_analysis,
+)
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+
+
+class RegressDataModule(LightningDataModule):
+    """`LightningDataModule` for the Regression dataset.
+
+    A `LightningDataModule` implements 7 key methods:
+
+    ```python
+        def prepare_data(self):
+        # Things to do on 1 GPU/TPU (not on every GPU/TPU in DDP).
+        # Download data, pre-process, split, save to disk, etc...
+
+        def setup(self, stage):
+        # Things to do on every process in DDP.
+        # Load data, set variables, etc...
+
+        def train_dataloader(self):
+        # return train dataloader
+
+        def val_dataloader(self):
+        # return validation dataloader
+
+        def test_dataloader(self):
+        # return test dataloader
+
+        def predict_dataloader(self):
+        # return predict dataloader
+
+        def teardown(self, stage):
+        # Called on every process in DDP.
+        # Clean up after fit or test.
+    ```
+
+    This allows you to share a full dataset without explaining how to download,
+    split, transform and process the data.
+
+    Read the docs:
+        https://lightning.ai/docs/pytorch/latest/data/datamodule.html
+    """
+
+    def __init__(
+        self,
+        cfg: DictConfig,
+        pretrained_model_dir: str,
+        # not used before refactor
+        # include_structured_data: bool = True,  # as before refactor
+        batch_size: int = 64,
+        eval_batch_size: int = 64,
+        num_workers: int = 0,
+        pin_memory: bool = False,
+        **kwargs,
+    ) -> None:
+        """ """
+        super().__init__()
+
+        # this line allows to access init params with 'self.hparams' attribute
+        # also ensures init params will be stored in ckpt
+        self.save_hyperparameters(logger=False)
+        self.cfg = cfg
+        self.model_data: ModelData = None  # type: ignore
+        self.preprocessor: ColumnTransformer = None  # type: ignore
+        self.tokenizer: BertTokenizer | PreTrainedTokenizerFast = None
+        self.split_data: SplitDataset
+
+        self.data_train: Dataset | None = None
+        self.data_val: Dataset | None = None
+        self.data_test: Dataset | None = None
+        self.has_extra_data: bool = False
+        self.categorical_variables: list[str] = []
+        self.numerical_variables: list[str] = []
+
+    def read_data_bert(self) -> ModelData:
+        """General loading of training data with some Bert specific preprocessing.
+
+        Returns
+        -------
+        ModelData
+            Trainig data
+        """
+        model_data = read_data(self.cfg)
+        self.free_text_colname = model_data.free_text_colname
+        assert isinstance(
+            self.free_text_colname, str
+        ), "No Free-text feature found in data"
+        self.has_extra_data = (
+            self.cfg.tuning_parameters.architecture.bert_architecture_name != "base"
+        )
+
+        structured_data_variables = set(model_data.X_names) - {self.free_text_colname}
+        self.categorical_variables = list(
+            structured_data_variables & set(model_data.X_names_categorical)
+        )
+        self.numerical_variables = list(
+            structured_data_variables - set(model_data.X_names_categorical)
+        )
+
+        assert len(set(self.categorical_variables) & set(model_data.X.columns)) == len(
+            set(self.categorical_variables)
+        ), f"{list(set(self.categorical_variables) - set(model_data.X.columns))} were not found in the data. Please check your spelling."
+
+        for c in self.numerical_variables:
+            assert (
+                model_data.X[c].notnull().all()
+            ), f"There are missing values in the numeric variable '{c}'."
+
+        # Keep only variables relevant for Bert
+        model_data.X = model_data.X[
+            (
+                self.numerical_variables
+                + self.categorical_variables
+                + [self.free_text_colname]
+            )
+        ]
+
+        if self.has_extra_data:
+            # pandas NA behave differently for sklearn encoders than numpy nan or none
+            # I tried numpy nan as they are supposed to work but it only worked for None. Maybe version problem
+            # https://github.com/scikit-learn/scikit-learn/issues/26890
+            # svorg_schadenursache_value is currently the only one where this is necessary
+            model_data.X[self.categorical_variables] = model_data.X[
+                self.categorical_variables
+            ].replace({pd.NA: None})
+        else:
+            # drop all the extra data
+            model_data.X = model_data.X[[self.free_text_colname]]
+
+        return model_data
+
+    def get_split_data(self) -> SplitDataset:
+        """
+        Steps:
+        1. bert_sample_splitter
+        2. if necessary (not loaded) create and fit one hot enocder for the categorical cols
+        3. one hot enocde split data
+        4. mask_positive_samples
+
+        Returns
+        -------
+        SplitDataset
+            Dataset with train, val, test attributes
+        """
+        # 1. bert_sample_splitter. Test_index is always provided as
+        # result of the split that takes place when initializing the
+        # ModelData object. This ensures classes are represented
+        # in the original train and test splits, both in the multiclass
+        # and binary settings.
+        logger.info("Split Train, Test, and Validation Sets")
+        split_data = bert_sample_splitter(
+            self.model_data.X,
+            self.model_data.y_class,  # this can correspond to binary or multiclass labels.
+            test_index=self.model_data.tests,
+            val_frac=self.cfg["tuning_parameters"]["validation_fraction"],
+            train_imbalance_0_to_1=self.cfg["tuning_parameters"][
+                "train_imbalance_0_to_1"
+            ],
+        )
+        # Overwriting the indices saved in the post_init method.
+        self.model_data.train_index = split_data.train.X.index
+        self.model_data.val_index = split_data.val.X.index
+        self.model_data.test_index = split_data.test.X.index
+
+        if self.cfg["log_run_mlflow"] is True:
+            log_dataset_mlflow(self.cfg, self.model_data, "train", index=None)
+            log_dataset_mlflow(self.cfg, self.model_data, "val", index=None)
+
+        if self.has_extra_data:
+            # 2. if necessary (not loaded) create and fit one hot enocder for the categorical cols
+            if self.preprocessor is None:
+                self.preprocessor = self.create_preprocessor_extra_data(
+                    df=split_data.train.X,
+                )
+
+            # 3. one hot enocde split data
+            split_data.train.X = self.preprocessor.transform(split_data.train.X)  # type: ignore
+            split_data.val.X = self.preprocessor.transform(split_data.val.X)  # type: ignore
+            self.model_data.X = self.preprocessor.transform(self.model_data.X)  # type: ignore
+
+        self.extra_data_dim = self.model_data.X.shape[1] - 1
+
+        # 4. mask_positive_samples
+        # TODO: combine mask_positive_samples for lgbm and bert
+        if self.cfg["masked_positive_samples"]:
+            if self.cfg["tradeoff_factor"] != 1.0:
+                propensities = get_propensities(self.cfg["propensity_run_id"])
+                mask_positive_samples(
+                    self.model_data, split_data, self.cfg, propensities
+                )
+            else:
+                mask_positive_samples(self.model_data, split_data, self.cfg)
+        else:
+            logger.info("Skipped masking positive labels!")
+
+        return split_data
+
+    def calculate_tokenization_analysis(self):
+        """
+        Analyzes aspects of how well the tokenization on the free texts works.
+        Useful for understanding impact of abbreviation processing.
+        Counts how many samples get truncated due to being larger than the max context size and saves them to a df for insepction
+        Checks the proportion of unknown tokens in the dataset.
+        Saves the lengths of all token sequences to mlflow as histogram.
+        """
+        if not self.cfg["tuning_parameters"]["tokenization_analysis"]:
+            self.tokenization_analysis = None
+            return
+
+        x_text = self.model_data.X[self.free_text_colname]
+        y = self.model_data.y_class
+        n_too_long = 0
+        indices = []
+        lengths = []
+        descriptions = []
+        labels_too_long = []
+        share_unknown = []
+        lengths_too_long = []
+        for i, text in tqdm(
+            enumerate(x_text.to_list()),
+            total=len(x_text.to_list()),
+            desc="tokenizing text for analysis",
+        ):
+            X_token_check = self.tokenizer(
+                text,
+                return_tensors="pt",
+                padding=False,
+                truncation=False,
+            )
+            if X_token_check["input_ids"].shape[1] >= 512:
+                n_too_long += 1
+                indices.append(i)
+                descriptions.append(text)
+                labels_too_long.append(y.values[i])
+                lengths_too_long.append(X_token_check["input_ids"].shape[1])
+            lengths.append(X_token_check["input_ids"].shape[1])
+            share_unknown.append(
+                torch.sum(X_token_check["input_ids"] == 101)
+                / X_token_check["input_ids"].shape[1]
+            )
+        avg_share_unknown = np.mean(share_unknown)
+        tokenization_analysis = TokenizationAnalysis(
+            n_too_long=n_too_long,
+            indices=indices,
+            lengths=lengths,
+            lengths_too_long=lengths_too_long,
+            descriptions=descriptions,
+            labels_too_long=labels_too_long,
+            avg_share_unknown=avg_share_unknown,
+        )
+        log_tokenization_analysis(tokenization_analysis)
+
+    def create_tokenizer(self):
+        """
+        Create the tokenizer. Separate this from setup if only need tokenizer not model_data
+        """
+        if self.tokenizer is None:
+            # Using AutoTokenizer as it acts as model (tokenizer)
+            # dispatch
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                self.hparams.pretrained_model_dir,
+                do_lower_case=self.cfg["free_text_preprocessing"]["lower_case"],
+            )
+
+    def setup(self, stage: str | None = None) -> None:
+        """Load data. Set variables: `self.data_train`, `self.data_val`, `self.data_test`.
+
+        This method is called by Lightning before `trainer.fit()`, `trainer.validate()`, `trainer.test()`, and
+        `trainer.predict()`, so be careful not to execute things like random split twice! Also, it is called after
+        `self.prepare_data()` and there is a barrier in between which ensures that all the processes proceed to
+        `self.setup()` once the data is prepared and available for use.
+
+        :param stage: The stage to setup. Either `"fit"`, `"validate"`, `"test"`, or `"predict"`. Defaults to ``None``.
+        """
+        # init the tokenizer separate from the data loading because the cross fitter only needs the tokenizer
+        self.create_tokenizer()
+
+        if self.model_data is None:
+            self.model_data = self.read_data_bert()
+            self.split_data = self.get_split_data()
+            self.calculate_tokenization_analysis()
+
+    def train_dataloader(self) -> DataLoader[Any]:
+        """Create and return the train dataloader.
+
+        :return: The train dataloader.
+        """
+        dataloader = self.generate_dataloader(
+            x_text=self.split_data.train.X[self.free_text_colname],
+            x_structured=self.split_data.train.X.drop(columns=[self.free_text_colname]),
+            y=self.split_data.train.y,
+            batch_size=self.hparams.batch_size,
+            shuffle=True,
+        )
+
+        return dataloader
+
+    def val_dataloader(self) -> DataLoader[Any]:
+        """Create and return the validation dataloader.
+
+        :return: The validation dataloader.
+        """
+
+        dataloader = self.generate_dataloader(
+            x_text=self.split_data.val.X[self.free_text_colname],
+            x_structured=self.split_data.val.X.drop(columns=[self.free_text_colname]),
+            y=self.split_data.val.y,
+            batch_size=self.hparams.eval_batch_size,
+            shuffle=False,
+        )
+
+        return dataloader
+
+    def test_dataloader(self) -> DataLoader[Any]:
+        """Create and return the test dataloader.
+
+        :return: The test dataloader.
+        """
+        raise NotImplementedError("There was no logic for testing before refactor")
+
+    def predict_dataloader(self) -> DataLoader[Any]:
+        dataloader = self.generate_dataloader(
+            x_text=self.model_data.X[self.free_text_colname],
+            x_structured=self.model_data.X.drop(columns=[self.free_text_colname]),
+            y=self.model_data.y_class,
+            batch_size=self.hparams.eval_batch_size,
+        )
+        return dataloader
+
+    def state_dict(self) -> dict[Any, Any]:
+        """Called when saving a checkpoint. Implement to generate and save the datamodule state.
+
+        :return: A dictionary containing the datamodule state that you want to save.
+        """
+        return {"preprocessor": self.preprocessor}
+
+    def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        """Called when loading a checkpoint. Implement to reload datamodule state given datamodule
+        `state_dict()`.
+
+        :param state_dict: The datamodule state returned by `self.state_dict()`.
+        """
+        self.preprocessor = state_dict["preprocessor"]
+
+    def create_preprocessor_extra_data(
+        self,
+        df: pd.DataFrame,
+    ) -> ColumnTransformer:
+        """Creates and fits a one hot encoder for for each categorical column in the data.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            The data with categorical columns
+        """
+
+        categorical_pipeline = Pipeline(
+            steps=[
+                (
+                    "onehot",
+                    OneHotEncoder(handle_unknown="ignore", sparse_output=False),
+                )
+            ]
+        )
+        numeric_pipeline = Pipeline(
+            steps=[
+                ("scaler", MinMaxScaler()),
+            ]
+        )
+
+        # Combine pipelines in a ColumnTransformer
+        preprocessor = ColumnTransformer(
+            transformers=[
+                ("cat", categorical_pipeline, self.categorical_variables),
+                ("num", numeric_pipeline, self.numerical_variables),
+            ],
+            remainder="passthrough",
+            verbose_feature_names_out=False,
+        )
+
+        preprocessor.fit(X=df)
+        preprocessor.set_output(transform="pandas")
+        return preprocessor
+
+    def generate_dataloader(
+        self,
+        x_text: pd.Series,
+        y: pd.Series,
+        x_structured: pd.DataFrame | None = None,
+        batch_size: int = 32,
+        shuffle: bool = False,
+    ) -> DataLoader:
+        """Returns a custom dataloader that separates the snofl text from the categorical and numerical features.
+
+        Parameters
+        ----------
+        x_structured : pd.DataFrame
+            A dataframe containing numerical and categorical variables used for prediction that are to be fed to the model as extra data
+        x_text: pd.Series
+            A series of strings describing
+        y : pd.Series
+            A series of binary labels
+        batch_size : int, optional
+            The number of rows per batch, by default 32
+        shuffle: bool
+            Whether or not the dataloader should shuffle the dataset at the beginning of every epoch
+
+        Returns
+        -------
+        torch.DataLoader
+            A dataloader that outputs batches of input_ids, attention_mask, labels, extra_data
+        """
+        X_token = self.tokenizer(
+            x_text.to_list(),
+            return_tensors="pt",
+            padding="max_length",
+            truncation=True,
+            max_length=min(
+                2048, self.tokenizer.model_max_length
+            ),  # 512 in case of Bert, 2048 in case of EuroBert
+        )
+        y_token = torch.tensor(y.values)
+        if x_structured is not None and x_structured.shape[1] > 0:
+            x_structured = x_structured.to_numpy()
+            extra_data = torch.tensor(x_structured).float()
+            dataset = TensorDataset(
+                X_token["input_ids"], X_token["attention_mask"], y_token, extra_data
+            )
+        else:
+            zero_tkn = torch.tensor(np.zeros(len(y_token)))
+            dataset = TensorDataset(
+                X_token["input_ids"], X_token["attention_mask"], y_token, zero_tkn
+            )
+
+        return DataLoader(
+            dataset=dataset,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            num_workers=self.hparams.num_workers,
+        )
+
+
+def bert_sample_splitter(
+    X: pd.DataFrame,
+    y: pd.Series,
+    test_index: pd.Index | None = None,
+    test_frac: float | None = None,
+    val_frac: float = 0.1,
+    train_imbalance_0_to_1: float = -1,
+) -> SplitDataset:
+    """_summary_
+
+    Parameters
+    ----------
+    X : pd.DataFrame
+        Predictor variables
+    y : pd.Series
+        Target variable (either binary or multiclass)
+    test_index : pd.Index | None, optional
+        index describing which samples to put in the test set, by default None
+    test_frac : float | None, optional
+        Fraction of samples to put into test set in case index is not provided, by default None
+    val_frac : float, optional
+        Fraction of samples from the train set tot put into the validation set, by default 0.1
+    train_imbalance_0_to_1 : float, optional
+        Defines the ratio of N(0) / N(1) which is achieved by subsampling from the 0-class.
+        If `-1`, no sub-sampling is done. By default -1
+
+    Returns
+    -------
+    SplitDataset
+        A SplitDataset object including the train, val and test datasets
+
+    Raises
+    ------
+    ValueError
+        Raised if neither test_index nor test frac are provided. One is necessary.
+    """
+    # # for debugging / developing
+    # X = X.assign(has_forderung=y).sample(5000)
+    # y = X.pop("has_forderung")
+
+    if test_index is not None and test_frac is not None:
+        logger.warning(
+            "You provided `test_index` and `test_frac`. Only `test_index` will be considered."
+        )
+
+    # y is a pd.Series containing the target classes. In case of multiclass
+    # classification, positive classes are collapsed into one single
+    # positive class, in order to end up working in the binary setting
+    # when dealing with the train_imbalance_0_to_1 parameter.
+    # This way, negative samples are downsampled, while the distribution of
+    # positive classes is not changed / inflated, but reflects the natural one.
+    if test_index is not None:
+        # We assume test indices given as inputs already ensure
+        # all classes are represented both in the train and test splits.
+        X_tmp, y_tmp = X[~test_index], y[~test_index]
+        X_test, y_test = X[test_index], y[test_index]
+    elif test_frac is not None:
+        # It is necessary to perform stratified splitting in case of multiclass classification.
+        is_multiclass = len(y.unique()) > 2
+        X_tmp, X_test, y_tmp, y_test = train_test_split(
+            X, y, test_size=test_frac, stratify=y if is_multiclass else None
+        )
+    else:
+        raise ValueError("Either `test_index` or `test_frac` must be provided.")
+
+    # Use the binarized target column to perform the balancing.
+    if train_imbalance_0_to_1 != -1:
+        # y_tmp potentially contains multiple classes. In this case,
+        # it is necessary to collapse all positive classes to a single positive class.
+        y_tmp_binarized = y_tmp.copy()
+        y_tmp_binarized = (y_tmp_binarized != 0).astype(int)
+        # sub-sample the training/validation data
+        X_tmp = X_tmp.assign(has_forderung=y_tmp_binarized, class_target=y_tmp)
+        n_0, n_1 = X_tmp.groupby("has_forderung").size().loc[[0, 1]].values
+        assert (train_imbalance_0_to_1 > 0) & (
+            n_0 > train_imbalance_0_to_1 * n_1
+        ), f"The desired sub-sampling structure is out of bounds. train_imbalance_0_to_1 = {train_imbalance_0_to_1}"
+        # As we are downsampling the negative class without modifying the positive labels,
+        # the fact that all positive classes are represented in all splits still holds.
+        X_1 = X_tmp.query("has_forderung == 1")
+        X_0 = X_tmp.query("has_forderung == 0").sample(
+            int(n_1 * train_imbalance_0_to_1)
+        )
+        # the concatenated df needs to be shuffled in order to obtain training batches with mixed target classes
+        X_tmp = pd.concat([X_0, X_1], axis=0).sample(frac=1).copy()
+        y_tmp_binarized = X_tmp.pop("has_forderung")
+        y_tmp = X_tmp.pop("class_target")
+
+        assert np.isclose(
+            y_tmp_binarized.mean(),
+            1 / (1 + train_imbalance_0_to_1),
+            rtol=(1 / len(y_tmp_binarized)),
+            atol=(1 / len(y_tmp_binarized)),
+        )
+
+    X_train, X_val, y_train, y_val = train_test_split(
+        X_tmp, y_tmp, test_size=val_frac, stratify=y_tmp
+    )
+
+    return SplitDataset(
+        BasicDataset(X_train, y_train),
+        BasicDataset(X_val, y_val),
+        BasicDataset(X_test, y_test),
+    )
+
+
+"""
+This file is intended for classes which are in use in the model pipeline
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from typing import TypeAlias, Union
+
+import numpy as np
+import pandas as pd
+from omegaconf import DictConfig
+
+from hf4_regress_exploration.model.steps.setup_and_checks import (
+    filter_flat_data_to_n_samples,
+)
+from hf4_regress_exploration.model.steps.shared_preprocessing_functions import (
+    calculate_sample_weights,
+    train_test_split,
+)
+from hf4_regress_exploration.model.steps.text_preprocessing import (
+    post_process_free_text_field,
+)
+from hf4_regress_exploration.utils.load_data import (
+    load_table_from_regress_data_pipeline_mlflow,
+)
+
+NumpyNumber: TypeAlias = Union[np.floating, np.integer]
+
+logger = logging.getLogger()
+
+
+@dataclass
+class ModelData:
+
+    data: pd.DataFrame = field(
+        metadata={"description": "The dataframe containing all samples."}
+    )
+    num_classes: int = field(
+        metadata={
+            "description": "Number of classes for the classification task. If 2, it corresponds to standard binary classification."
+        },
+    )
+    y_class: pd.Series = field(metadata={"description": "Targets for the classifier."})
+    y_savings: pd.Series = field(
+        metadata={"description": "Targets for the savings model."}
+    )
+    # TODO: as we also store trains and tests, this might be a bit redundant. Think
+    # about refactoring the code to avoid using sample and directly define trains and tests
+    # boolean pd.Series.
+    sample: pd.Series = field(
+        metadata={
+            "description": "Pandas Series defining if each sample belongs to the 'train' or 'test' split."
+        }
+    )
+    sample_weights: pd.Series = field(
+        metadata={
+            "description": "Weights for each sample is weighted cross-entropy or IPW have to be used."
+        }
+    )
+
+    X_names: list[str] = field(
+        metadata={
+            "description": "Exogenous feature names (both numerical and categorical) for classifier. They CAN be used for inference but MUST be used for training to avoid target label leakage."
+        }
+    )
+
+    X_names_endo: list[str] | None = field(
+        metadata={
+            "description": "Endogenous feature names (both numerical and categorical) for classifier. They CAN be used for inference but CANNOT be used for training to avoid target label leakage. Set to None if endogenous features are not used for model inference."
+        }
+    )
+
+    X_names_savings: list[str] = field(
+        metadata={
+            "description": "Feature names (both numerical and categorical) for savings model."
+        }
+    )
+
+    free_text_colname: str | None = field(
+        metadata={"description": "Name of the column contianing free-text."}
+    )
+
+    X_names_categorical: list[str] = field(
+        init=False,
+        metadata={"description": "Categorical feature names for classifier."},
+    )
+    X_names_endo_categorical: list[str] | None = field(
+        init=False,
+        metadata={
+            "description": "Categorical feature names to be used when predicting leveraging endogenous information."
+        },
+    )
+    X_names_savings_categorical: list[str] = field(
+        init=False,
+        metadata={"description": "Categorical feature names for savings model."},
+    )
+    is_masked_train: pd.Series = field(
+        init=False,
+        metadata={
+            "description": "Whether to mask some labelled samples during training to evaluate model capability to generalize."
+        },
+    )
+    y_class_train: pd.Series = field(
+        init=False,
+        metadata={
+            "description": "Classification targets belonging to the train split-"
+        },
+    )
+    y_class_test: pd.Series = field(
+        init=False,
+        metadata={"description": "Classification targets belonging to the test split."},
+    )
+
+    X: pd.DataFrame = field(
+        init=False,
+        metadata={
+            "description": "Dataframe containing features for the learning task. It can be used both for training and inference."
+        },
+    )
+
+    X_endo: pd.DataFrame | None = field(
+        init=False,
+        metadata={
+            "description": "Dataframe containing endogenous features for the learning task. It can be used only for inference."
+        },
+    )
+
+    trains: pd.Series = field(
+        init=False,
+        metadata={
+            "description": "Boolean Pandas Series used for masking to extract train samples."
+        },
+    )
+    tests: pd.Series = field(
+        init=False,
+        metadata={
+            "description": "Boolean Pandas Series used for masking to extract test samples."
+        },
+    )
+    preds_proba_train_test_model: pd.DataFrame = field(
+        init=False,
+        metadata={
+            "description": "Regress probability after training on the train split only. In both binary and multiclass classification, this corresponds to the predicted distribution over all classes. Columns are named after the class they represent (e.g. proba_class_idx)"
+        },
+    )
+    preds_proba_full_model: pd.DataFrame = field(
+        init=False,
+        metadata={
+            "description": "Regress probability after training on all data. In both binary and multiclass classification, this corresponds to the predicted distribution over all classes. Columns are named after the class they represent (e.g. proba_class_idx)"
+        },
+    )
+
+    preds_savings_train_test_model: pd.Series | None = field(
+        init=False,
+        metadata={
+            "description": "Estimated savings after training on the train split only considering samples with positive saving."
+        },
+        default=None,
+    )
+    preds_savings_full_model: pd.Series | None = field(
+        init=False,
+        metadata={
+            "description": "Estimated savings after training on all data only considering samples with positive saving."
+        },
+        default=None,
+    )
+
+    preds_train_test_model: pd.Series | None = field(
+        init=False,
+        metadata={
+            "description": "Expected savings after training on the train split only. It is obtained as product of our classifier and our conditional savings scores."
+        },
+        default=None,
+    )
+    preds_full_model: pd.Series | None = field(
+        init=False,
+        metadata={
+            "description": "Expected savings after training on all data. It is obtained as product of our classifier and our conditional savings scores."
+        },
+        default=None,
+    )
+
+    train_index: pd.Index = field(
+        init=False, metadata={"description": "Train indices."}
+    )
+    val_index: pd.Index = field(
+        init=False, metadata={"description": "Validation indices."}
+    )
+    test_index: pd.Index = field(init=False, metadata={"description": "Test indices."})
+
+    def __post_init__(self) -> None:
+
+        # IMPORTANT: Up to a specific pandas version, extracting
+        # columns from a df will return a view instead of
+        # a copy. If endogenous features need to be used, an additional
+        # feature matrix has to be created, and working with views might
+        # become problematic as exogenous and endogenous features are likely
+        # to share columns of the same underlying data. Our pandas
+        # version should support the copy-on-write step for many operations,
+        # which avoids explicitely creating copies of the original data.
+        self.X = self.data[self.X_names]
+        self.X_endo = (
+            self.data[self.X_names_endo] if self.X_names_endo is not None else None
+        )
+        self.X_savings = self.data[self.X_names_savings]
+
+        numericals = list(set(self.data._get_numeric_data().columns))
+        # It is necessary to ensure free-text is not considered as categorical.
+        categoricals = list(
+            {
+                col_name
+                for col_name in self.data.columns
+                if col_name not in ["full_text_exog", "full_text_endo"]
+            }
+            - set(numericals)
+        )
+
+        self.X_names_categorical = list(set(categoricals) & set(self.X_names))
+        self.X_names_endo_categorical = (
+            list(set(categoricals) & set(self.X_names_endo))
+            if self.X_names_endo is not None
+            else None
+        )
+        self.X_names_savings_categorical = list(
+            set(categoricals) & set(self.X_names_savings)
+        )
+
+        self.trains = self.sample == "train"
+        self.tests = self.sample == "test"
+
+        # Defining train and test indices, which are potentially
+        # later overwritten if another split (e.g. train / val / test splits)
+        # is performed.
+        self.train_index = self.sample[self.sample == "train"].index
+        self.test_index = self.sample[self.sample == "test"].index
+
+        self.y_class_train = self.y_class[self.trains]  # type: ignore
+        self.is_masked_train = pd.Series(data=False, index=self.y_class_train.index)
+        self.y_class_test = self.y_class[self.tests]  # type: ignore
+        
+        # fallback for sample weights for external datasets
+        if self.sample_weights is None:
+            self.sample_weights = pd.Series(data=1.0, index=self.data.index)
+        else:
+            self.sample_weights_train = self.sample_weights[self.trains]
+            self.sample_weights_test = self.sample_weights[self.tests]
+
+    @classmethod
+    def create_object_from_cfg(
+        cls,
+        cfg: DictConfig,
+    ) -> ModelData:
+        """
+        Load flat data and do some preprocessing on the text fields
+        Args:
+            cfg: Config defining which data to load with which free_text columns
+            column_info: Contains information on flat_data to be loaded and its columns
+        Returns:
+            ModelData object
+        """
+        dataset_source = cfg.get("dataset", {}).get("dataset_source", "internal")
+        logger.info(f"Loading dataset using strategy: {dataset_source}")
+
+        if dataset_source == "internal":
+            return cls._load_internal_dataset(cfg)
+        elif dataset_source == "petfinder":
+            return cls._load_petfinder_dataset(cfg)
+        elif dataset_source == "ecommerce":
+            return cls._load_ecommerce_dataset(cfg)
+        else: 
+            raise ValueError(f"Unsupported dataset source: {dataset_source}")
+
+    @classmethod
+    def _load_internal_dataset(cls, cfg: DictConfig) -> ModelData:
+        """Loads ModelData from internal Dataset (Regress data pipeline)
+
+        Parameters
+        ----------
+        cfg : DictConfig
+
+        Returns
+        -------
+        ModelData
+
+        Raises
+        ------
+        ValueError
+        """
+        # Before loading the data, it is necessary to perform checks
+        # ensuring that train and predict config arguments are
+        # supported in the current version of the code.
+        if not cfg["train"] and not cfg["predict"]:
+            raise ValueError(
+                "At least one between 'train' and 'predict' has to be set to True"
+            )
+        if cfg["train"] and cfg["predict_on_endo"]:
+            raise ValueError(
+                "Doing inference on endogenous features right after training is not currently supported. Train the models first to later load and evaluate them."
+            )
+        if cfg["predict_on_endo"] and not cfg["predict"]:
+            raise ValueError(
+                "Predict has to be set to True if inference on endogenous features has to be performed."
+            )
+        flat_data = load_table_from_regress_data_pipeline_mlflow(
+            cfg["regress_data_pipeline_run_id"],
+            f"flat_df_{cfg['sparte'].lower()}",
+            "s3_data_pipeline",
+        )
+
+        # Defining exogenous features for model training.
+        X_names = cfg["classification_vars"]
+        X_names_savings = cfg.get("savings_vars", [])
+
+        # Defining endogenous features for model inference.
+        X_names_endo = None
+        if cfg["predict_on_endo"]:
+            X_names_endo = (
+                X_names.copy()
+            )  # necessary to avoid referencing the same object
+            exog_to_endo_map = cfg["conversion_map"]
+            # Replacing elements inside list based on the conversion map.
+            for feature_idx, feature_name in enumerate(X_names_endo):
+                if feature_name in exog_to_endo_map:
+                    X_names_endo[feature_idx] = exog_to_endo_map[feature_name]
+                    logger.info(
+                        f"Replacing {feature_name} with {exog_to_endo_map[feature_name]} in endogenous feature matrix."
+                    )
+
+        assert (
+            flat_data["schadenvorgang_id"].notnull().all()
+        ), "Some rows have no 'SCHADENVORGANG_ID'"
+        assert flat_data[
+            "schadenvorgang_id"
+        ].is_unique, (
+            "There seem to be duplicated 'SCHADENVORGANG_ID's in the imported ModelData"
+        )
+        assert set(X_names).issubset(
+            flat_data.columns
+        ), "Some exogenous feature columns are missing in the data: {}".format(
+            set(X_names) - set(flat_data.columns)
+        )
+        if X_names_endo is not None:
+            assert set(X_names_endo).issubset(
+                flat_data.columns
+            ), "Some endogenous feature columns are missing in the data: {}".format(
+                set(X_names_endo) - set(flat_data.columns)
+            )
+        assert (
+            cfg["free_text_colname"] in X_names or cfg["free_text_colname"] is None
+        ), "Free-text feature '{}' is not in available feature-set".format(
+            cfg["free_text_colname"]
+        )
+        # Ensuring that no train_imbalance value has been set in
+        # case of propensity_run.
+        assert not (
+            cfg["class_target"] == "is_labelled"
+            and cfg["tuning_parameters"].get("train_imbalance_0_to_1", None) is not None
+            and cfg["tuning_parameters"]["train_imbalance_0_to_1"] != -1
+        ), "Do not set train_imbalance_0_to_1 when training a propensity model."
+
+        # Checking if target column contains NaN values.
+        assert (
+            flat_data[cfg["class_target"]].notnull().all()
+        ), "Target variable '{}' has missing values".format(cfg["class_target"])
+
+        # Converting class_target values to numerical ids if target column contains strings.
+        # In case of conversion, the target column gets overwritten, but original textual labels
+        # can be eventually retrieved leveraging the conversion dictionary defined in the config file.
+        if pd.api.types.is_string_dtype(flat_data[cfg["class_target"]]):
+            assert (
+                cfg["label2id"] is not None
+            ), "Output column contains textual labels but no conversion dictionary has been provided"
+            try:
+                flat_data[cfg["class_target"]] = flat_data[cfg["class_target"]].map(
+                    cfg["label2id"]
+                )
+            except KeyError as e:
+                print(
+                    f"Keys defined in the conversion dictionary do not match the textual labels in the output column. \n See the following error for more context: \n{e}"
+                )
+        # Checking if all positive classes have a savings_target value which is well defined.
+        assert (
+            flat_data[flat_data[cfg["class_target"]] != 0][cfg["savings_target"]]
+            .notnull()
+            .all()
+        ), "Target variable '{}' has missing values in positive class".format(
+            cfg["savings_target"]
+        )
+        # flat_data = flat_data[~np.isnan(flat_data[cfg["target"]])]
+        # In case of multiclass classification, the following splitting procedure is
+        # stratified, ensuring all classes are represented both in the train and test splits.
+        flat_data = train_test_split(
+            cfg, flat_data
+        )  # Called as early as possible, as to avoid random seed being unexpectectly changed
+        # Defining weights to weight the importance of each class. The function supports classes
+        # for both binary and multiclass classification.
+        flat_data = calculate_sample_weights(cfg["class_target"], flat_data)
+
+        flat_data = filter_flat_data_to_n_samples(flat_data, cfg)
+        if cfg["free_text_colname"] is not None:
+            # The current version of the code does not support prediction
+            # on endogenous information when also training the model.
+            # Therefore, in order to avoid performing redundant computation,
+            # it is necessary to check if:
+            # - train=True: perform post-precessing on exog text
+            # - predict_on_endo=True - but no endo text available: perform post-processing on exog text
+            # - predict_on_endo=True - endo text available: perform post-processing on endo text.
+            # - predict=True - perform post-processing on exog text.
+            if (
+                cfg["predict_on_endo"]
+                and cfg["free_text_colname"] in cfg["conversion_map"]
+            ):
+                # If prediction on exogenous feature has to be performed and
+                # an endogenous version of the text has to be used, process it.
+                flat_data = post_process_free_text_field(
+                    flat_data,
+                    cfg["conversion_map"][cfg["free_text_colname"]],
+                    cfg,
+                )
+            else:
+                # The current run performs either (train and/or) prediction on exogenous features
+                # or prediction on endogenous information but text is not updated.
+                flat_data = post_process_free_text_field(
+                    flat_data, cfg["free_text_colname"], cfg
+                )
+
+        # Checking if the number of target classes in the data matches
+        # the value defined by the user.
+        user_defined_classes = cfg.get("num_classes", 2)
+        assert (
+            user_defined_classes == flat_data[cfg["class_target"]].nunique()
+        ), "Number of classes defined in the config file do not match those identified in the data."
+
+        return cls(
+            data=flat_data,
+            X_names=X_names,  # exogenous features for classification.
+            X_names_endo=X_names_endo,  # endogenous feature for classification
+            X_names_savings=X_names_savings,
+            y_class=flat_data[cfg["class_target"]],
+            y_savings=flat_data[cfg["savings_target"]].fillna(0),
+            sample=flat_data["train_test_split"],
+            sample_weights=flat_data["sample_weights"],
+            free_text_colname=cfg["free_text_colname"],
+            num_classes=user_defined_classes,
+        )
+
+    @classmethod
+    def _load_petfinder_dataset(cls, cfg: DictConfig) -> ModelData:
+        """
+        Load the PetFinder dataset (Train), join all auxiliary tables (Breeds, Colors, States)
+        and adapt it to the ModelData schema. 
+        """
+        logger.info("Loading PetFinder dataset")
+ 
+        # 1. Define paths
+        base_path = cfg.dataset.dataset_path
+        train_csv_path = f"{base_path}/train/train.csv"
+        breed_labels_path = f"{base_path}/breed_labels.csv"
+        color_labels_path = f"{base_path}/color_labels.csv"
+        state_labels_path = f"{base_path}/state_labels.csv"
+ 
+        # 2. Load Main Tables
+        df = pd.read_csv(train_csv_path)
+ 
+        # 3. Load Auxiliary Tables
+        breeds_df = pd.read_csv(breed_labels_path)
+        colors_df = pd.read_csv(color_labels_path)
+        states_df = pd.read_csv(state_labels_path)
+ 
+        # 4. Adapter: Advanced Joins for Semantic Enrichment
+        # --- Helper for Breeds ---
+        # We join Breed1 and Breed2 separately.
+        # Breed1
+        df = df.merge(
+            breeds_df, 
+            left_on=["Breed1", "Type"], 
+            right_on=["BreedID", "Type"], 
+            how="left"
+        ).rename(columns={"BreedName": "Primary_Breed"})
+        # Breed2 (Mixed breeds)
+        df = df.merge(
+            breeds_df, 
+            left_on=["Breed2", "Type"], 
+            right_on=["BreedID", "Type"], 
+            how="left",
+            suffixes=("", "_2")
+        ).rename(columns={"BreedName": "Secondary_Breed"})
+ 
+        # --- Helper for Colors ---
+        # We join Color1, Color2, Color3.
+        # Note: Colors are global (not Type dependent usually), relying on ColorID.
+        # Color1
+        df = df.merge(
+            colors_df, left_on="Color1", right_on="ColorID", how="left"
+        ).rename(columns={"ColorName": "Primary_Color"})
+        # Color2
+        df = df.merge(
+            colors_df, left_on="Color2", right_on="ColorID", how="left", suffixes=("", "_2")
+        ).rename(columns={"ColorName": "Secondary_Color"})
+        # Color3
+        df = df.merge(
+            colors_df, left_on="Color3", right_on="ColorID", how="left", suffixes=("", "_3")
+        ).rename(columns={"ColorName": "Tertiary_Color"})
+ 
+        # --- Join States ---
+        df = df.merge(
+            states_df, left_on="State", right_on="StateID", how="left"
+        ).rename(columns={"StateName": "State_Name"})
+ 
+        # 5. Clean up Semantic Columns (Fill NaNs from Joins)
+        # If Breed2 is 0, the merge results in NaN. We change this to "None" or empty string 
+        # so the text model knows it's purebred.
+        df["Secondary_Breed"] = df["Secondary_Breed"].fillna("None")
+        # Same for colors (0 = No color pattern)
+        df["Secondary_Color"] = df["Secondary_Color"].fillna("None")
+        df["Tertiary_Color"] = df["Tertiary_Color"].fillna("None")
+ 
+        # 6. Adapter: Create ID
+        df["schadenvorgang_id"] = df.index.astype(str)
+ 
+        # 7. Prepare Text Features (Fusion)
+        # We now have a richer set of text data.
+        name_col = "Name"
+        desc_col = "Description"
+        free_text_col = cfg.get("free_text_colname", "full_text_exog")
+ 
+        df[name_col] = df[name_col].fillna("No Name")
+        df[desc_col] = df[desc_col].fillna("No Description")
+ 
+        # Concatenate: "Name Description"
+        # Note: We do NOT concatenate Breeds/Colors into the free_text column here, 
+        # because we pass them as categorical/text features in X_names. 
+        # If you want them strictly inside the BERT-Text, you would add them here.
+        # Assuming standard logic: keep metadata separate, free-text combined.
+        df[free_text_col] = "Name: " + df[name_col] + " Description: " + df[desc_col]
+ 
+        if cfg["random_subsample_n"] is not None:
+            df = df.sample(cfg["random_subsample_n"], random_state=cfg.get("random_seed", 42))
+
+        # 8. Prepare Target
+        target_origin = "AdoptionSpeed"
+        target_dest = cfg["class_target"]
+        df[target_dest] = df[target_origin]
+ 
+        # 9. Define Structured Features (X)
+        # Including the new semantic columns.
+        candidate_features = [
+            "Type",
+            "Age",
+            "Gender",
+            "MaturitySize",
+            "FurLength",
+            "Vaccinated",
+            "Dewormed",
+            "Sterilized",
+            "Health",
+            "Quantity",
+            "Fee",
+            "VideoAmt",
+            "PhotoAmt",
+            "Primary_Breed",
+            "Secondary_Breed",
+            "Primary_Color",
+            "Secondary_Color",
+            "Tertiary_Color",
+            "State_Name"
+        ]
+ 
+        # Filter for existence
+        structured_features = [c for c in candidate_features if c in df.columns]
+ 
+        # Handle NaNs in structured features
+        for col in structured_features:
+            if df[col].dtype == "object":
+                df[col] = df[col].fillna("Unknown")
+            else:
+                df[col] = df[col].fillna(0)
+ 
+        # 10. Final Feature Set
+        X_names = structured_features + [free_text_col]
+ 
+        # 11. Train/Test Split
+        # Since the user requested concatenation to do their OWN split, we check if
+        # 'train_test_split' exists (maybe pre-defined), otherwise we generate a random one
+        # covering the whole joined dataset.
+        if "train_test_split" not in df.columns:
+            np.random.seed(cfg.get("random_seed", 42))
+            # Create split across the entire concatenated set
+            mask = np.random.rand(len(df)) < 0.8
+            df["train_test_split"] = np.where(mask, "train", "test")
+ 
+        # 12. Compatibility Columns
+        df["sample_weights"] = 1.0
+        savings_target = cfg.get("savings_target", "savings_dummy")
+        df[savings_target] = 0.0
+        df["is_labelled"] = 1
+ 
+        logger.info(
+            "PetFinder dataset prepared: %d total samples, %d features.",
+            len(df),
+            len(structured_features),
+        )
+ 
+        return cls(
+            data=df,
+            X_names=X_names,
+            X_names_endo=None,
+            X_names_savings=[],
+            y_class=df[target_dest],
+            y_savings=df[savings_target],
+            sample=df["train_test_split"],
+            sample_weights=df["sample_weights"],
+            free_text_colname=free_text_col,
+            num_classes=df[target_dest].nunique(),
+        )
+
+    @classmethod
+    def _load_ecommerce_dataset(cls, cfg: DictConfig) -> ModelData:
+        """Load the Women's E-Commerce Reviews dataset and adapt it to the ModelData schema.
+        """
+        logger.info("Loading E-Commerce dataset...")
+    
+        # 1. Load CSV from path defined in the config (must be set in YAML)
+        path = f"{cfg.dataset.dataset_path}/Womens Clothing E-Commerce Reviews.csv"
+        df = pd.read_csv(path)
+    
+        # 2. Adapter: create an ID column
+        # Downstream code (e.g. hashing in common_funcs) expects a 'schadenvorgang_id' column.
+        # Use the DataFrame index as a unique identifier for each sample.
+        df["schadenvorgang_id"] = df.index.astype(str)
+    
+        # 3. Prepare text features
+        # We combine 'Title' and 'Review Text' to maximize textual context.
+        text_col_origin = "Review Text"
+        title_col_origin = "Title"
+    
+        # Target name for the free-text feature (e.g. "full_text_exog"), taken from the config
+        free_text_col = cfg.get("free_text_colname", "full_text_exog")
+    
+        # Replace NaNs in the raw text columns with empty strings to avoid issues when concatenating
+        df[text_col_origin] = df[text_col_origin].fillna("No Review Text")
+        df[title_col_origin] = df[title_col_origin].fillna("No Title")
+    
+        # Concatenate title and review into a single free-text column: "Title ReviewText"
+        df[free_text_col] = "Title: " + df[title_col_origin] + " Review Text: " + df[text_col_origin]
+
+        if cfg["random_subsample_n"] is not None:
+            df = df.sample(cfg["random_subsample_n"], random_state=cfg.get("random_seed", 42))
+
+        # 4. Prepare target variable (binary classification)
+        # Original target is 'Recommended IND' (0 or 1). We map it to the configured class_target.
+        target_origin = "Recommended IND"
+        target_dest = cfg["class_target"]
+    
+        if target_origin not in df.columns:
+            raise ValueError(f"Column '{target_origin}' not found in dataset.")
+    
+        df[target_dest] = df[target_origin]
+    
+        # 5. Define structured features (X)
+        # Candidate features selected from the dataset schema.
+        # Note: 'Rating' is intentionally not included to avoid potential label leakage.
+        candidate_features = [
+            "Age",
+            "Positive Feedback Count",
+            "Division Name",
+            "Department Name",
+            "Class Name",
+        ]
+    
+        # Use only features that are actually present in the dataset
+        structured_features = [c for c in candidate_features if c in df.columns]
+    
+        # Handle missing values in structured features:
+        # - Categorical (object) columns: fill with "Unknown"
+        # - Numerical columns: fill with 0
+        for col in structured_features:
+            if df[col].dtype == "object":
+                df[col] = df[col].fillna("Unknown")
+            else:
+                df[col] = df[col].fillna(0)
+    
+        # IMPORTANT: The free-text column must also be part of X_names to satisfy ModelData assertions
+        X_names = structured_features + [free_text_col]
+    
+        # 6. Create a train/test split if not already given in the CSV
+        # Default: random 80/20 split, controlled by 'random_seed' in the config.
+        if "train_test_split" not in df.columns:
+            np.random.seed(cfg.get("random_seed", 42))
+            mask = np.random.rand(len(df)) < 0.8
+            df["train_test_split"] = np.where(mask, "train", "test")
+    
+        # 7. Add compatibility columns expected by the rest of the pipeline
+        # Sample weights default to 1.0 for all samples.
+        df["sample_weights"] = 1.0
+    
+        # Savings target is not used for this classification task.
+        # We still create a dummy column to satisfy ModelData initialization.
+        savings_target = cfg.get("savings_target", "savings_dummy")
+        df[savings_target] = 0.0
+        df["is_labelled"] = 1
+    
+        logger.info(
+            "E-Commerce dataset loaded: %d samples, %d structured features.",
+            len(df),
+            len(structured_features),
+        )
+    
+        # 8. Construct and return the ModelData instance
+        return cls(
+            data=df,
+            X_names=X_names,
+            X_names_endo=None,  # No endogenous features for this dataset
+            X_names_savings=[],
+            y_class=df[target_dest],
+            y_savings=df[savings_target],
+            sample=df["train_test_split"],
+            sample_weights=df["sample_weights"],
+            free_text_colname=free_text_col,
+            num_classes=df[target_dest].nunique(),
+        )
+
+class BasicDataset:
+    """Helper class to make train val test split more tractable"""
+
+    def __init__(self, X: pd.DataFrame, y: pd.Series):
+        self.X = X
+        self.y = y
+
+
+class SplitDataset:
+    """Helper class to make train val test split more tractable"""
+
+    def __init__(self, train: BasicDataset, val: BasicDataset, test: BasicDataset):
+        self.train = train
+        self.val = val
+        self.test = test
+        self.splits = [train, val, test]
+
+
+@dataclass
+class TokenizationAnalysis:
+    n_too_long: int
+    indices: list[int]
+    lengths: list[int]
+    lengths_too_long: list[int]
+    descriptions: list[str]
+    labels_too_long: list[int]
+    avg_share_unknown: float
