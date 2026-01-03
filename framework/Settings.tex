@@ -148,6 +148,10 @@
 \pretocmd{\acrshort}{\stepcounter{countacronym}}{}{}
 \pretocmd{\acrlong}{\stepcounter{countacronym}}{}{}
 \pretocmd{\acrfull}{\stepcounter{countacronym}}{}{}
+\pretocmd{\Gls}{\stepcounter{countacronym}}{}{}
+\pretocmd{\gls}{\stepcounter{countacronym}}{}{}
+\pretocmd{\Glspl}{\stepcounter{countacronym}}{}{}
+\pretocmd{\glspl}{\stepcounter{countacronym}}{}{}
 \newcommand*{\acr}[1]{\acrshort{#1}}
 \newcommand*{\Acr}[1]{\acrlong{#1}}
 
