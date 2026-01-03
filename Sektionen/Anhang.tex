@@ -159,3 +159,65 @@ class SumBert(BertForSequenceClassification):
             attentions=outputs.attentions,
         )
 \end{lstlisting}
+
+\subsection{Quellcode der CrossBERT-Architektur}
+\label{app:source_code_crossbert}
+
+Der folgende Quellcode enthält die PyTorch-Implementierung der in Abschnitt \ref{sec:crossbert_architecture} beschriebenen CrossBERT-Architektur, einschließlich \textit{TabularTokenizer} und \textit{CrossAttentionBlock}.
+
+\begin{lstlisting}[language=Python, caption={PyTorch-Implementierung von CrossBERT}, label={lst:crossbert_code}, basicstyle=\ttfamily\scriptsize, breaklines=true, keywordstyle=\color{blue}, stringstyle=\color{green!50!black}, commentstyle=\color{gray}]
+class CrossBert(BertForSequenceClassification):
+    """BERT classifier with Early and Late cross-attention over tabular tokens."""
+
+    def __init__(self, cfg: BertConfig, extra_data_dim: int, cross_attention_positions: Dict[str, bool], 
+                 num_tab_tokens: int = 4, cross_attention_heads: Optional[int] = None):
+        super().__init__(cfg)
+        self.tabular_tokenizer = TabularTokenizer(num_features=extra_data_dim, hidden_size=cfg.hidden_size,
+                                                 num_tab_tokens=num_tab_tokens, dropout=cfg.hidden_dropout_prob)
+        self.cross_attn_early = CrossAttentionBlock(embed_dim=768, num_heads=8) if cross_attention_positions.get("early") else None
+        self.cross_attn_late = CrossAttentionBlock(embed_dim=768, num_heads=8) if cross_attention_positions.get("late") else None
+        self.post_fusion_ln = nn.LayerNorm(cfg.hidden_size)
+        self.post_fusion_dropout = nn.Dropout(cfg.hidden_dropout_prob)
+
+    def forward(self, input_ids=None, attention_mask=None, extra_data=None, tab_mask=None, **kwargs):
+        tab_tokens = self.tabular_tokenizer(extra_data) if extra_data is not None else None
+        embeddings = self.bert.embeddings(input_ids=input_ids)
+
+        if self.cross_attn_early and tab_tokens is not None:
+            cls_early = self.cross_attn_early(embeddings[:, :1, :], tab_tokens, tab_mask=tab_mask)
+            embeddings = torch.cat([cls_early, embeddings[:, 1:, :]], dim=1)
+
+        encoder_outputs = self.bert.encoder(hidden_states=embeddings, 
+                                            attention_mask=self.bert.get_extended_attention_mask(attention_mask, attention_mask.shape, attention_mask.device))
+        cls_token = encoder_outputs.last_hidden_state[:, :1, :]
+
+        if self.cross_attn_late and tab_tokens is not None:
+            cls_token = self.cross_attn_late(cls_token, tab_tokens, tab_mask=tab_mask)
+
+        fused_cls = self.post_fusion_dropout(self.post_fusion_ln(cls_token)).squeeze(1)
+        return SequenceClassifierOutput(logits=self.classifier(fused_cls))
+
+class CrossAttentionBlock(nn.Module):
+    def __init__(self, embed_dim, num_heads, dim_feedforward=2048, dropout=0.1):
+        super().__init__()
+        self.attention = nn.MultiheadAttention(embed_dim, num_heads, dropout=dropout, batch_first=True)
+        self.layer_norm_1 = nn.LayerNorm(embed_dim)
+        self.ffn = nn.Sequential(nn.Linear(embed_dim, dim_feedforward), nn.GELU(), nn.Dropout(dropout), nn.Linear(dim_feedforward, embed_dim))
+        self.layer_norm_2 = nn.LayerNorm(embed_dim)
+        self.dropout_attn, self.dropout_ffn = nn.Dropout(dropout), nn.Dropout(dropout)
+
+    def forward(self, cls_token, tab_tokens, tab_mask=None):
+        q, k = self.layer_norm_1(cls_token), self.layer_norm_1(tab_tokens)
+        attn_out, _ = self.attention(q, k, k, key_padding_mask=(tab_mask == 0) if tab_mask is not None else None)
+        x = cls_token + self.dropout_attn(attn_out)
+        return x + self.dropout_ffn(self.ffn(self.layer_norm_2(x)))
+
+class TabularTokenizer(nn.Module):
+    def __init__(self, num_features, hidden_size, num_tab_tokens=8, dropout=0.1):
+        super().__init__()
+        self.projections = nn.ModuleList([nn.Sequential(nn.Linear(num_features, hidden_size), nn.GELU(), 
+                                                       nn.Dropout(dropout), nn.LayerNorm(hidden_size)) for _ in range(num_tab_tokens)])
+
+    def forward(self, tabular_input):
+        return torch.cat([proj(tabular_input).unsqueeze(1) for proj in self.projections], dim=1)
+\end{lstlisting}

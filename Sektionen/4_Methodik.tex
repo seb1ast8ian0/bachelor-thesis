@@ -6,20 +6,22 @@ In diesem Kapitel wird das methodische Vorgehen dieser Arbeit detailliert beschr
 \subsection{Datenbasis und Vorverarbeitung}
 \label{sec:data_basis}
 
-Die Qualität der Eingangsdaten ist entscheidend für multimodale Deep-Learning-Verfahren. Diese Arbeit nutzt einen hybriden Ansatz aus proprietären Versicherungsdaten und öffentlichen Benchmarks, die eine standardisierte Pipeline durchlaufen, um die Modalitäten für Transformer-Modelle aufzubereiten.
+Die Qualität und Aufbereitung der Eingangsdaten bilden das Fundament für die Leistungsfähigkeit multimodaler Deep-Learning-Verfahren. Diese Arbeit verfolgt einen hybriden Datenansatz, der proprietäre Echtdaten aus der Versicherungswirtschaft mit etablierten öffentlichen Benchmarks kombiniert. Um die Reproduzierbarkeit und wissenschaftliche Integrität zu gewährleisten, durchlaufen alle Datensätze eine standardisierte Pipeline (implementiert als \texttt{LightningDataModule}), die eine konsistente Transformation der heterogenen Modalitäten für die nachgelagerten Transformer-Architekturen sicherstellt.
 
 \subsubsection{Datenbasis}
-Der primäre Datensatz stammt von einem deutschen Versicherungsunternehmen und dient der Identifikation von Regresspotenzialen (Rückforderungen von Dritten). Er kombiniert unstrukturierte Schadenbeschreibungen (Text) mit strukturierten Merkmalen wie Sparte, Vertragsart und Schadenshöhe (Tabelle). Ein konkretes Beispiel für die Beschaffenheit dieser Daten ist in Tabelle \ref{tab:sample_case} dargestellt. Die Nutzung dieser Echtdaten birgt zwei zentrale Herausforderungen: Ein \textit{Selection Bias} entsteht, da nur manuell vorselektierte Fälle gelabelt sind, während ungeprüfte Fälle ein \textit{Missing Label Problem} aufweisen. Für diese ungelabelten Fälle wird initial die Annahme getroffen, dass kein Regresspotenzial vorliegt (Label 0), was eine konservative Schätzung darstellt. Das Modell wird somit auf dem gesamten verfügbaren Datensatz trainiert, wobei die implizite Unsicherheit der angenommenen Labels eine besondere Herausforderung für die Generalisierungsfähigkeit darstellt.
+Der primäre Untersuchungsgegenstand ist ein umfangreicher Datensatz eines deutschen Versicherungsunternehmens, der spezifisch für die Identifikation von Regresspotenzialen (Rückforderungen gegenüber Dritten) kuratiert wurde. Dieser Datensatz zeichnet sich durch seine multimodale Struktur aus: Er verknüpft unstrukturierte, natürlichsprachliche Schadenbeschreibungen (z.\,B. Unfallhergang, Gutachterberichte) mit strukturierten, tabellarischen Metadaten (z.\,B. Sparte, Vertragsart, Schadenshöhe). Tabelle \ref{tab:sample_case} illustriert die Komplexität eines typischen Datenpunktes.
+
+Die Verwendung dieser Realwelt-Daten bringt spezifische Herausforderungen mit sich, die adressiert werden müssen. Zum einen liegt ein \textit{Selection Bias} vor, da historisch nur solche Fälle ein Label erhielten, die manuell von Sachbearbeitern zur Prüfung ausgewählt wurden. Zum anderen resultiert hieraus für die große Menge ungeprüfter Fälle ein \textit{Missing Label Problem}. Für diese ungelabelten Fälle wird in dieser Arbeit initial die Annahme getroffen, dass kein Regresspotenzial vorliegt (Label 0). Diese konservative Heuristik ermöglicht es, das Modell auf dem gesamten verfügbaren Datenkorpus zu trainieren. Es ist jedoch zu beachten, dass die implizite Unsicherheit dieser \enquote{angenommenen} Labels (Noisy Labels) eine besondere Herausforderung für die Generalisierungsfähigkeit des Modells darstellt und robuste Lernverfahren erfordert.
 
 \begin{table}[ht]
     \centering
     \small
     \renewcommand{\arraystretch}{1.3}
-    \caption{Beispiel eines Datensatzes der internen Regressdatenbasis.}
+    \caption{Exemplarischer Datensatz der internen Regressdatenbasis (anonymisiert).}
     \label{tab:sample_case}
     \begin{tabular}{@{}lp{0.75\textwidth}@{}}
         \hline
-        \textbf{Metadaten} & ID: 68443XXXX, Label: 1 (Regress), Is Labeled: 1 (True)\\
+        \textbf{Metadaten} & ID: 68443XXXX, Label: 1 (Regress), Status: Validiert (True)\\
         \hline
         \textbf{Textmodalität} & \textit{Schadenhergang:} VN: Kreuzung: Vn hatte grünen Pfeil der aufgeleuchtet sei. Es kam zur Kollision Vorgang strittig. \textit{Dokumente:} ausführliche HSA, strittige Ampel, PUM, EA-Geb-re io. \textit{Notizen:} PWS empfiehlt Beauftragung eines SV; ADAC bereits auf dem Weg; wst wartet auf fg... \\
         \hline
@@ -28,12 +30,26 @@ Der primäre Datensatz stammt von einem deutschen Versicherungsunternehmen und d
     \end{tabular}
 \end{table}
 
-Zur Validierung und Sicherstellung der Domänenunabhängigkeit dienen zwei Kaggle-Benchmarks: \textit{Women's E-Commerce Clothing Reviews} \cite{KaggleEcommerce} für binäre Klassifikation (Empfehlung ja/nein) und \textit{PetFinder.my Adoption Prediction} \cite{KagglePetfinder} für Multi-Class-Klassifikation (Adoptionsgeschwindigkeit). Beide kombinieren Nutzer- bzw. Tierbeschreibungen mit tabellarischen Metadaten und erlauben so eine objektive Evaluation der Cross-Attention-Mechanismen unter kontrollierten Bedingungen.
+Zur externen Validierung der Modellarchitektur und zur Sicherstellung der Domänenunabhängigkeit werden zusätzlich zwei öffentliche Kaggle-Benchmarks herangezogen:
+\begin{enumerate}
+    \item \textbf{Women's E-Commerce Clothing Reviews} \cite{KaggleEcommerce}: Ein Datensatz für die binäre Sentiment-Klassifikation (Empfehlung: ja/nein), der Rezensionstexte mit Nutzerdaten (Alter, Abteilung, Klasse) verbindet.
+    \item \textbf{PetFinder.my Adoption Prediction} \cite{KagglePetfinder}: Ein komplexer Datensatz für die Multi-Class-Klassifikation der Adoptionsgeschwindigkeit von Haustieren. Er kombiniert Tierbeschreibungen mit vielfältigen Metadaten (Rasse, Farbe, Alter, Gesundheitszustand).
+\end{enumerate}
+Diese Benchmarks ermöglichen eine objektive Evaluation der entwickelten Cross-Attention-Mechanismen unter kontrollierten Bedingungen und stellen die Vergleichbarkeit mit dem State-of-the-Art sicher.
 
 \subsubsection{Datenvorverarbeitung}
-Die Vorverarbeitung überführt Rohdaten in numerische Tensoren. Tabellarische kategoriale Merkmale werden mittels One-Hot-Encoding kodiert, wobei fehlende Werte als eigene Kategorie \texttt{None} erhalten bleiben. Numerische Variablen werden per Min-Max-Skalierung auf das Intervall $[0, 1]$ normalisiert, um numerische Stabilität beim Gradientenabstieg zu gewährleisten.
+Die Transformation der Rohdaten in modellgerechte numerische Tensoren erfolgt in einem mehrstufigen Prozess, der strikt zwischen Trainings-, Validierungs- und Testdaten trennt, um methodische Fehler wie Data Leakage zu vermeiden.
 
-Textdaten werden mit einem vortrainierten \texttt{bert-base-uncased} Tokenizer verarbeitet. Dies umfasst Lowercasing, WordPiece-Tokenisierung zur Reduktion von OOV-Problemen sowie das Hinzufügen von \texttt{[CLS]} und \texttt{[SEP]} Token. Alle Sequenzen werden auf eine fixe Länge von 512 Token (Padding/Truncation) normiert. Um dem Klassenungleichgewicht der Regressdaten zu begegnen, wird ein Random Undersampling der Majoritätsklasse (\texttt{train\_imbalance\_0\_to\_1}) sowie eine stratifizierte Aufteilung in Trainings-, Validierungs- und Testmengen angewendet, um die Repräsentativität der Zielklassen zu wahren.
+\textbf{Tabellarische Daten:}
+Kategorische Merkmale werden mittels One-Hot-Encoding in binäre Vektoren überführt. Hierbei werden fehlende Werte (\textit{Missing Values}) explizit als eigene Kategorie \texttt{None} kodiert, um die Information des Fehlens für das Modell nutzbar zu machen. Numerische Variablen werden mittels Min-Max-Skalierung auf das Intervall $[0, 1]$ normalisiert, was die numerische Stabilität während des Gradientenabstiegs fördert. Entscheidend für die wissenschaftliche Validität ist, dass sämtliche Transformationsparameter (z.\,B. Minima/Maxima für die Skalierung, Vokabular des Encoders) ausschließlich auf dem Trainingsdatensatz ermittelt (\textit{fit}) und anschließend auf die Validierungs- und Testdaten angewandt werden (\textit{transform}). Dies verhindert, dass Informationen aus dem Testset unzulässig in das Training einfließen.
+
+\textbf{Textdaten:}
+Die Verarbeitung der unstrukturierten Textdaten erfolgt durch einen vortrainierten \texttt{bert-base-uncased} Tokenizer. Die Pipeline umfasst das Lowercasing (Kleinschreibung), die Zerlegung in Subword-Units (WordPiece-Algorithmus) zur Reduktion unbekannter Wörter (Out-of-Vocabulary, OOV) sowie das Hinzufügen der speziellen Steuertoken \texttt{[CLS]} (Klassifikation) und \texttt{[SEP]} (Separator). Alle Sequenzen werden durch Padding oder Truncation auf eine einheitliche Länge von 512 Token normiert. Da die Trunkierung längerer Texte potenziell zum Verlust relevanter Informationen führt, wird begleitend eine statistische Analyse der Tokenverteilung durchgeführt. Diese überwacht den Anteil trunkierter Dokumente und stellt sicher, dass die gewählte Sequenzlänge den Großteil der semantischen Information abdeckt.
+
+\textbf{Splitting und Balancing:}
+Um dem inhärenten Klassenungleichgewicht der Regressdaten (Dominanz der Nicht-Regress-Fälle) zu begegnen, wird im Training ein Random Undersampling der Majoritätsklasse angewendet (gesteuert durch den Parameter \texttt{train\_imbalance\_0\_to\_1}). Die Aufteilung in Trainings-, Validierungs- und Testmengen erfolgt stratifiziert, d.\,h. unter Beibehaltung der ursprünglichen Verteilung der Zielklassen. Dies ist besonders bei der Multi-Class-Klassifikation (z.\,B. PetFinder) essenziell, um sicherzustellen, dass seltene Klassen in allen Splits repräsentativ vertreten sind.
+
+Zusätzlich wird eine Strategie des \textit{Label Masking} (\texttt{masked\_positive\_samples}) eingesetzt. Hierbei wird ein Teil der positiven Labels während des Trainings gezielt maskiert, um die Robustheit des Modells gegenüber unvollständigen Informationen zu evaluieren und die Generalisierungsfähigkeit auf bisher ungesehene Regressmuster zu fördern. Dieser Ansatz simuliert die reale Situation, in der potenzielle Regressfälle zwar existieren, aber noch nicht explizit als solche identifiziert wurden.
 
 \newpage
 \subsection{Baseline-Modelle}
@@ -80,26 +96,60 @@ Diese Architektur ist rechnerisch effizient und leicht zu implementieren, verhin
 \subsection{CrossBERT-Architektur}
 \label{sec:crossbert_architecture}
 
-Das Kernstück dieser Arbeit ist die CrossBERT-Architektur, die eine tiefe Interaktion zwischen Text und Tabellen über Cross-Attention ermöglicht.
+Die CrossBERT-Architektur erweitert einen \gls{bert}-Klassifikator um Cross-Attention zwischen Text und Tabellendaten, um eine kontextabhängige, tiefe Interaktion der Modalitäten zu ermöglichen (vgl. Abschnitt \ref{sec:transformer_attention}). Im Unterschied zu SumBERT und ConcatBERT (Abschnitt \ref{sec:baselines}) wird die tabellarische Modalität nicht als statischer Zusatzvektor behandelt, sondern als kurze Token-Sequenz in denselben Hidden-Space projiziert und vom Text gezielt \enquote{abgefragt}. Der vollständige Quellcode ist in Anhang \ref{app:source_code_crossbert} (Listing \ref{lst:crossbert_code}) dokumentiert.
+
+\subsubsection{Architekturüberblick}
+Abbildung \ref{fig:crossbert_architecture} zeigt den Gesamtaufbau. Text wird mit \texttt{bert-base-uncased} in Embeddings überführt und durch den Encoder kontextualisiert ($H=768$). Tabellarische Features werden parallel durch einen \textit{TabularTokenizer} in $N$ Tab Tokens kodiert. Optional werden ein oder zwei Cross-Attention-Blöcke eingesetzt, die ausschließlich den \texttt{[CLS]}-Token mit Tab Tokens fusionieren: (i) \textit{early} vor dem Encoder (Eingangs-Embeddings) und/oder (ii) \textit{late} nach dem Encoder (finaler \texttt{[CLS]}-State). Der Klassifikationskopf arbeitet anschließend auf dem fusionierten \texttt{[CLS]}-Vektor.
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.7\textwidth]{Bilder/CrossBERT_Modellarchitektur.png}
+    \caption{Architektur von CrossBERT mit optionaler Early- und Late-Cross-Attention über Tab Tokens.}
+    \label{fig:crossbert_architecture}
+\end{figure}
 
 \subsubsection{TabularTokenizer}
-Um einen fairen Vergleich zu den Baselines zu ermöglichen, bleibt der grundlegende Tokenizer-Ansatz vergleichbar, wird jedoch für die Cross-Attention erweitert.
+Die tabellarische Eingabe liegt nach der Vorverarbeitung als Vektor $X_{\text{tab}} \in \mathbb{R}^{B \times F}$ vor. Analog zur in Abschnitt \ref{sec:tab_representation} beschriebenen globalen Projektion werden daraus $N$ latente Tokens $E_{\text{tab}} \in \mathbb{R}^{B \times N \times H}$ erzeugt (Abbildung \ref{fig:tabular_tokenizer}):
+\begin{equation}
+    E_{\text{tab}} = [\mathbf{e}_1,\dots,\mathbf{e}_N], \quad \mathbf{e}_i \in \mathbb{R}^{B \times H}
+\end{equation}
+Praktisch wird dies durch $N$ parallele MLP-Projektionsköpfe realisiert, die denselben Feature-Vektor in unterschiedliche Teilrepräsentationen abbilden. Die Wahl eines kleinen $N$ entkoppelt die Tokenanzahl von $F$ und hält die Cross-Attention rechnerisch effizient.
+
+\subsubsection{Cross-Attention-Block}
+Die Fusion erfolgt über Cross-Attention, bei der der \texttt{[CLS]}-Token als Query dient und Tab Tokens als Keys/Values (vgl. Abschnitt \ref{sec:transformer_attention}). Für $\mathbf{c} \in \mathbb{R}^{B \times 1 \times H}$ gilt:
+\begin{equation}
+    Q = \mathbf{c} W_Q,\quad K = E_{\text{tab}} W_K,\quad V = E_{\text{tab}} W_V
+\end{equation}
+CrossBERT verwendet Multi-Head Attention und ergänzt diese um Residualpfade sowie ein Feed-Forward-Netzwerk (Abbildung \ref{fig:cross_attention_block}). Optional kann eine Tab-Maske genutzt werden, um einzelne Tab Tokens in der Attention auszublenden.
+
+\begin{figure}[h]
+    \centering
+    \begin{subfigure}[b]{0.49\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{Bilder/TabularTokenizer_Diagram.png}
+        \caption{TabularTokenizer}
+        \label{fig:tabular_tokenizer}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.49\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{Bilder/CrossAttentionBlock_Diagram.png}
+        \caption{Cross-Attention-Block}
+        \label{fig:cross_attention_block}
+    \end{subfigure}
+    \caption{Komponenten der CrossBERT-Architektur: Links die Projektion der Features in Tab Tokens, rechts deren Integration via Cross-Attention.}
+    \label{fig:crossbert_components}
+\end{figure}
+
+\subsubsection{Fusionsvarianten: Early, Late und Hybrid}
+Die Positionierung des Cross-Attention-Blocks operationalisiert die in den theoretischen Grundlagen diskutierten Fusionszeitpunkte:
 \begin{itemize}
-    \item \textbf{Funktionsweise:} Ein MLP projiziert die vorverarbeiteten tabellarischen Daten in einen hochdimensionalen Raum ($H=768$).
-    \item \textbf{N-Vektoren-Projektion:} Im Gegensatz zu herkömmlichen Methoden erzeugt der Tokenizer nicht einen einzelnen aggregierten Vektor, sondern eine Sequenz von $N$ Vektoren.
-    \item \textbf{Vorteil:} Dies erlaubt dem Modell, unterschiedliche Aspekte der tabellarischen Daten in separaten Repräsentationen zu lernen. In der Cross-Attention-Schicht kann das Modell diese verschiedenen Bedeutungen gezielt gewichten und adressieren.
+    \item \textbf{Early Fusion:} Cross-Attention wird auf den \texttt{[CLS]}-Embedding-Vektor vor dem Encoder angewandt, sodass tabellarische Information die gesamte nachfolgende Kontextualisierung beeinflussen kann.
+    \item \textbf{Late Fusion:} Cross-Attention wird erst auf den finalen Encoder-\texttt{[CLS]}-State angewandt, wodurch tabellarische Information als kontextabhängige Nachschärfung der Dokumentrepräsentation integriert wird.
+    \item \textbf{Hybrid Fusion:} Early und Late Fusion werden kombiniert, um sowohl die Encoder-Features als auch die finale Entscheidungsschicht mit Tabellensignalen zu versorgen.
 \end{itemize}
 
-\subsubsection{Fusionsstrategien: Early, Late und Hybrid}
-Es werden drei verschiedene Integrationszeitpunkte untersucht:
-\begin{itemize}
-    \item \textbf{Early Fusion:} Die Zusammenführung der Modalitäten erfolgt bereits vor dem Eintritt in den Transformer-Encoder.
-    \item \textbf{Late Fusion:} Die Modalitäten werden erst nach der vollständigen Enkodierung fusioniert.
-    \item \textbf{Hybrid Fusion:} Eine Kombination beider Ansätze, bei der Informationen sowohl früh als auch spät im Modellverlauf ausgetauscht werden.
-\end{itemize}
-
-\subsubsection{Cross-Attention Mechanismus}
-Hier wird die mathematische Umsetzung der Attention-Schichten (Query, Key, Value) im Kontext der multimodalen Interaktion detailliert formalisiert.
+Falls keine tabellarischen Features vorliegen oder Cross-Attention deaktiviert ist, verhält sich CrossBERT identisch zu einem unimodalen \gls{bert}-Klassifikator und bleibt damit direkt vergleichbar.
 
 \newpage
 \subsection{Trainings-Setup und Evaluationsmetriken}
@@ -137,14 +187,14 @@ Um den Einfluss einzelner Architektur-Entscheidungen systematisch zu verstehen, 
 \centering
 \caption{Übersicht der geplanten Ablationsstudien}
 \label{tab:ablations_overview}
-\begin{tabular}{|l|l|l|l|l|}
+\begin{tabular}{|l|p{0.36\textwidth}|p{0.44\textwidth}|}
 \hline
-\textbf{Ablation} & \textbf{Variable} & \textbf{Wertebereich} & \textbf{Metriken} & \textbf{Ziel} \\ \hline
-Tokenizer & TabTokenizer V1 vs. V2 & - & F1, AUC & Einfluss der Projektion \\ \hline
-Gating & Mit vs. Ohne Gating & - & F1, AUC & Nutzen dynamischer Fusion \\ \hline
-Tokens & Tab Token Count & 1, 4, 8, 16 & Rechenzeit, F1 & Optimale Granularität \\ \hline
-Modalität & Text-only vs. Multi & - & Savings & Mehrwert der Tabellen \\ \hline
+\textbf{Ablation} & \textbf{Variable (Wertebereich)} & \textbf{Ziel} \\ \hline
+Cross-Attention & Position: Early / Late / Hybrid & Einfluss des Fusionsorts (vor/nach Encoder vs.\ kombiniert) \\ \hline
+Tab Tokens & $n_{\text{tab}}$ (Hybrid): 0 / 1 / 2 / 4 / 8 / 16 & Quantitativ prüfen, wie stark $n_{\text{tab}}$ die Leistung von CrossBERT (Hybrid) beeinflusst \\ \hline
+Gating Layer & Flamingo-style \cite{Alayrac2022}: Mit / Ohne & Adaptive Gewichtung Text$\leftrightarrow$Tab für stabilere Scores und ökonomische Kennzahlen \\ \hline
+Tokenizer & TabTokenizer: V1 /\ V2 (per-Feature-Tokenisierung) & Prüfen, ob feinere Tokenisierung Fusion und Interpretierbarkeit verbessert \\ \hline
 \end{tabular}
 \end{table}
 
-In den folgenden Unterabschnitten werden die spezifischen Anpassungen für den \textit{TabTokenizerV2}, verschiedene \textit{Gating}-Mechanismen und die Variation des \textit{Tab Token Counts} im Detail erläutert.
+Im Fokus stehen (i) die Positionierung der Cross-Attention (Early/Late/Hybrid), (ii) die Sensitivität gegenüber der Anzahl der Tab Tokens $n_{\text{tab}}$ im Hybrid-Setup, (iii) ein Gating-Mechanismus nach Flamingo zur stabileren Fusion sowie (iv) ein \textit{TabTokenizer V2} mit per-Feature-Tokenisierung zur potenziell besseren Interpretierbarkeit.
