@@ -1,15 +1,15 @@
 \section{Methodik}
 \label{sec:methodik}
 
-Dieses Kapitel beschreibt Datenbasis, Vorverarbeitung und experimentelles Setup zur Entwicklung und Evaluation der CrossBERT-Architektur.
+Dieses Kapitel beschreibt Datenbasis, Vorverarbeitung und experimentelles Setup zur Entwicklung und Evaluation der in dieser Arbeit vorgestellten CrossBERT-Architektur.
 
 \subsection{Datenbasis und Vorverarbeitung}
 \label{sec:data_basis}
 
-Es wird ein hybrider Datenansatz verfolgt: proprietäre Echtdaten aus der Versicherungswirtschaft werden mit öffentlichen Benchmarks kombiniert. Alle Datensätze werden über eine einheitliche Pipeline (\texttt{LightningDataModule}) in konsistente Tensor-Repräsentationen überführt, inklusive Splitting, tabellarischer Transformationen und Texttokenisierung.
+Es wird ein hybrider Ansatz verfolgt: proprietäre Echtdaten aus der Versicherungswirtschaft werden mit öffentlichen Benchmarks kombiniert. Alle Datensätze werden über eine einheitliche Pipeline (\texttt{LightningDataModule}) in konsistente Tensor-Repräsentationen überführt, inklusive Splitting, tabellarischer Transformationen und Texttokenisierung.
 
 \subsubsection{Datenbasis}
-Der primäre Datensatz stammt aus einem deutschen Versicherungsunternehmen und wurde für die Identifikation von Regresspotenzialen kuratiert. Er kombiniert unstrukturierte Schadenbeschreibungen mit tabellarischen Metadaten; Tabelle \ref{tab:sample_case} zeigt einen exemplarischen Datenpunkt. Methodisch relevant sind ein \textit{Selection Bias} (Labels entstehen historisch nur für manuell geprüfte Fälle) sowie ein \textit{Missing Label Problem}. Für ungelabelte Fälle wird initial Label 0 angenommen; die dadurch entstehenden Unsicherheiten werden als potenziell verrauschte Labels berücksichtigt.
+Der primäre Datensatz stammt aus einem deutschen Versicherungsunternehmen und wurde für die Identifikation von Regresspotenzialen kuratiert. Es handelt sich um ein Multi-Class-Setting mit den Zielklassen \textit{Kein Regress} (0), \textit{Regress} (1) und \textit{Versicherungsschutzentzug} (2). Er kombiniert unstrukturierte Schadenbeschreibungen mit tabellarischen Metadaten (Tabelle \ref{tab:sample_case} zeigt einen exemplarischen Datenpunkt). Methodisch relevant sind ein \textit{Selection Bias} (Labels entstehen historisch nur für manuell geprüfte Fälle) sowie ein \textit{Missing Label Problem}. Für ungelabelte Fälle wird initial Label 0 angenommen und die dadurch entstehenden Unsicherheiten werden als potenziell verrauschte Labels berücksichtigt.
 
 \begin{table}[ht]
     \centering
@@ -36,7 +36,7 @@ Zur externen Validierung werden zwei Kaggle-Benchmarks genutzt:
 Damit wird die Übertragbarkeit der Architektur außerhalb der Versicherungsdomäne überprüft.
 
 \subsubsection{Datenvorverarbeitung}
-Die Vorverarbeitung trennt strikt Trainings-, Validierungs- und Testdaten, um Data Leakage zu vermeiden. Das Splitting erfolgt stratifiziert (bei Multi-Class) und nutzt, sofern verfügbar, feste Test-Indizes; zusätzlich wird aus dem Trainingssplit ein Validierungsanteil (\texttt{validation\_\allowbreak fraction}) abgeleitet. Optional wird die Klassenverteilung im Training über Undersampling der Majoritätsklasse auf ein vorgegebenes Verhältnis $N(0)/N(1)$ (\texttt{train\_\allowbreak imbalance\_\allowbreak 0\_\allowbreak to\_\allowbreak 1}) eingestellt. Die zentralen Schritte sind:
+Die Vorverarbeitung trennt strikt Trainings-, Validierungs- und Testdaten, um Data Leakage zu vermeiden. Das Splitting erfolgt stratifiziert (bei Multi-Class) und nutzt (sofern verfügbar) feste Test-Indizes. Zusätzlich wird aus dem Trainingssplit ein Validierungsanteil (\texttt{validation\_\allowbreak fraction}) abgeleitet. Optional wird die Klassenverteilung im Training über Undersampling der Majoritätsklasse auf ein vorgegebenes Verhältnis $N(0)/N(1)$ (\texttt{train\_\allowbreak imbalance\_\allowbreak 0\_\allowbreak to\_\allowbreak 1}) eingestellt. Die zentralen Schritte sind:
 \begin{itemize}
     \item \textbf{Tabellarische Daten:} One-Hot-Encoding für kategoriale Merkmale (fehlende Werte als Kategorie \texttt{None}, unbekannte Kategorien werden ignoriert); Min-Max-Skalierung numerischer Variablen auf $[0,1]$. Die Encoder/Scaler werden ausschließlich auf Trainingsdaten trainiert (\textit{fit}) und auf Validierung/Test angewandt (\textit{transform}).
     \item \textbf{Textdaten:} Tokenisierung mit \texttt{bert\allowbreak-base\allowbreak-uncased} (inkl.\ \texttt{[CLS]} und \texttt{[SEP]}); Padding/Truncation auf die modellabhängige maximale Kontextlänge (für BERT: 512 Tokens).
@@ -47,10 +47,10 @@ Die Vorverarbeitung trennt strikt Trainings-, Validierungs- und Testdaten, um Da
 \subsection{Baseline-Modelle}
 \label{sec:baselines}
 
-Um den Mehrwert der entwickelten CrossBERT-Architektur präzise zu quantifizieren, erfolgt ein Vergleich mit zwei etablierten multimodalen Fusionsstrategien: SumBERT (Early Fusion) und ConcatBERT (Late Fusion). Beide Baselines verwenden denselben \texttt{bert-base-uncased}-Encoder sowie identische Datenvorverarbeitungsschritte, unterscheiden sich jedoch grundlegend im Zeitpunkt der Informationszusammenführung. Der vollständige Quellcode beider Implementierungen befindet sich in Anhang \ref{app:source_code_baselines}.
+Um den Mehrwert der entwickelten CrossBERT-Architektur präzise zu quantifizieren, erfolgt ein Vergleich mit zwei bestehenden multimodalen Modellen für die Fusion von tabellarischen Daten und Textdaten: SumBERT (Early Fusion) und ConcatBERT (Late Fusion). Der vollständige Quellcode beider Implementierungen befindet sich in Anhang \ref{app:source_code_baselines}.
 
 \subsubsection{SumBERT (Early Fusion)}
-Der SumBERT-Ansatz realisiert eine frühe Fusion, bei der die Tabelleninformationen bereits vor dem Encoding-Prozess in den Modellkontext integriert werden. Hierfür werden die normalisierten und kodierten Tabellendaten zunächst mittels einer linearen Projektionsschicht (\texttt{nn.Linear}) in den Vektorraum des Sprachmodells projiziert ($H=768$). Dieser projizierte Vektor wird anschließend elementweise zum Embedding des \texttt{[CLS]}-Tokens addiert, noch bevor die Sequenz den ersten Transformer-Layer erreicht (siehe Abbildung \ref{fig:sumbert}).
+SumBERT realisiert eine frühe Fusion, bei der die Tabelleninformationen bereits vor dem Encoder in den Modellkontext integriert werden. Hierfür werden die normalisierten und kodierten Tabellendaten zunächst mittels einer linearen Projektionsschicht (\texttt{nn.Linear}) in den Vektorraum des Sprachmodells projiziert ($H=768$). Dieser projizierte Vektor wird anschließend elementweise zum Embedding des \texttt{[CLS]}-Tokens addiert, noch bevor die Sequenz den ersten Transformer-Layer erreicht (siehe Abbildung \ref{fig:sumbert}).
 
 \begin{figure}[h]
     \centering
@@ -64,7 +64,7 @@ Formal lässt sich die Berechnung des fusionierten Eingabevektors wie folgt besc
     E_{\text{fused}}^{[CLS]} = E_{\text{text}}^{[CLS]} + \text{MLP}_{\text{tab}}(X_{\text{tab}})
 \end{equation}
 
-Durch diese additive Verknüpfung am Eingang fungiert das \texttt{[CLS]}-Token als globaler Träger multimodaler Informationen, die über den Self-Attention-Mechanismus in alle tieferen Schichten des Modells propagiert werden.
+Durch diese additive Verknüpfung am Eingang fungiert das \texttt{[CLS]}-Token als globaler Träger multimodaler Informationen, die anschließend über den Self-Attention-Mechanismus im Transformer-Encoder in alle tieferen Schichten des Modells propagiert werden.
 
 \newpage
 \subsubsection{ConcatBERT (Late Fusion)}
@@ -91,7 +91,7 @@ Diese Architektur ist rechnerisch effizient und leicht zu implementieren, verhin
 Die CrossBERT-Architektur erweitert einen \gls{bert}-Klassifikator um Cross-Attention zwischen Text und Tabellendaten, um eine kontextabhängige, tiefe Interaktion der Modalitäten zu ermöglichen (vgl. Abschnitt \ref{sec:transformer_attention}). Im Unterschied zu SumBERT und ConcatBERT (Abschnitt \ref{sec:baselines}) wird die tabellarische Modalität nicht als statischer Zusatzvektor behandelt, sondern als kurze Token-Sequenz in denselben Hidden-Space projiziert und vom Text gezielt \enquote{abgefragt}. Der vollständige Quellcode ist in Anhang \ref{app:source_code_crossbert} (Listing \ref{lst:crossbert_code}) dokumentiert.
 
 \subsubsection{Architekturüberblick}
-Abbildung \ref{fig:crossbert_architecture} zeigt den Gesamtaufbau. Text wird mit \texttt{bert-base-uncased} in Embeddings überführt und durch den Encoder kontextualisiert ($H=768$). Tabellarische Features werden parallel durch einen \textit{TabularTokenizer} in $N$ Tab Tokens kodiert. Optional werden ein oder zwei Cross-Attention-Blöcke eingesetzt, die ausschließlich den \texttt{[CLS]}-Token mit Tab Tokens fusionieren: (i) \textit{early} vor dem Encoder (Eingangs-Embeddings) und/oder (ii) \textit{late} nach dem Encoder (finaler \texttt{[CLS]}-State). Der Klassifikationskopf arbeitet anschließend auf dem fusionierten \texttt{[CLS]}-Vektor.
+Abbildung \ref{fig:crossbert_architecture} zeigt den Gesamtaufbau. Text wird mit \texttt{deepset/gbert-base} in Embeddings überführt und durch den Encoder kontextualisiert ($H=768$). Tabellarische Features werden parallel durch einen \textit{TabularTokenizer} in $N$ Tab Tokens kodiert. Optional werden ein oder zwei Cross-Attention-Blöcke eingesetzt, die ausschließlich den \texttt{[CLS]}-Token mit Tab Tokens fusionieren: (i) \textit{early} vor dem Encoder (Eingangs-Embeddings) und/oder (ii) \textit{late} nach dem Encoder (finaler \texttt{[CLS]}-State). Der Klassifikationskopf arbeitet anschließend auf dem fusionierten \texttt{[CLS]}-Vektor.
 
 \begin{figure}[h]
     \centering
@@ -149,27 +149,42 @@ Falls keine tabellarischen Features vorliegen oder Cross-Attention deaktiviert i
 \subsection{Trainings-Setup und Evaluationsmetriken}
 \label{sec:training_setup}
 
-Für eine wissenschaftliche Vergleichbarkeit werden alle Experimente unter identischen Rahmenbedingungen durchgeführt.
+Für eine wissenschaftliche Vergleichbarkeit werden alle Experimente unter identischen Rahmenbedingungen durchgeführt. Die Pipeline ist über eine zentralisierte Konfiguration parametrisiert und setzt alle relevanten Hyperparameter (Modell, Optimierung, Splitting, Callbacks) konsistent über Baselines und CrossBERT hinweg.
 
-\subsubsection{Hyperparameter und Strategie}
-\begin{itemize}
-    \item \textbf{Modell-Basis:} Als Transformer-Encoder und Text-Tokenizer wird einheitlich \texttt{bert-base-uncased} verwendet.
-    \item \textbf{Optimierung:} Details zum Optimizer (z. B. AdamW), der Learning-Rate-Strategie (Scheduler) und der Batchgröße.
-    \item \textbf{Training:} Festlegung der Epochenanzahl, des Early-Stopping-Kriteriums sowie der Anzahl der Seed-Replikationen zur Sicherstellung der statistischen Signifikanz.
-\end{itemize}
+\paragraph{Modell und Lernstrategie.}
+Als Textencoder wird \texttt{deepset/\allowbreak gbert-base} verwendet \cite{Chan2020GBERT}. GBERT ist ein vortrainiertes deutsches Sprachmodell auf Basis von BERT \cite{Devlin2019} und dient als Initialisierung für das end-to-end Fine-Tuning im jeweiligen Klassifikations-Setup. Die Klassifikation erfolgt überwacht mit Cross-Entropy-Loss. Die Architekturvariante (Baseline vs.\ CrossBERT) beeinflusst dabei ausschließlich die Art der multimodalen Fusion (vgl.\ Abschnitt \ref{sec:crossbert_architecture}).
 
-\subsubsection{Validierung und Hardware}
-\begin{itemize}
-    \item \textbf{Validierungs-Schema:} Beschreibung des Splits (z. B. 5-Fold Cross-Validation oder fester Train/Val/Test-Split).
-    \item \textbf{Infrastruktur:} Verwendete Hardware (GPUs), Einsatz von Mixed-Precision-Training zur Effizienzsteigerung.
-\end{itemize}
+\paragraph{Optimierung und Trainingsprotokoll.}
+Die zentralen Trainingshyperparameter sind in Tabelle \ref{tab:training_hparams} zusammengefasst. Zur Stabilisierung des Fine-Tunings wird eine Lernratenstrategie aus linearem Warmup und anschließendem Cosine Scheduling eingesetzt. Das Early Stopping überwacht \texttt{val/average\_\allowbreak precision}. Die Validierung wird in festen Intervallen innerhalb einer Epoche ausgeführt (\texttt{val\_\allowbreak check\_\allowbreak interval}=500). 
+Für die \emph{Gating}-Ablation nach Flamingo (\cite{Alayrac2022}, siehe Abschnitt \ref{sec:ablations}) werden ausschließlich dafür zusätzlich (i) der \gls{bert}-Encoder für die ersten zwei Epochen eingefroren (\texttt{freeze\_bert\_epochs}=2), (ii) die Gating-Parameter (\texttt{alpha\_}) mit einer um den Faktor 5 erhöhten Lernrate ohne Weight Decay optimiert (\texttt{lr\_alpha\_multiplier}=5{,}0) und (iii) die Epochen-Grenzen auf min/max 2/6 gesetzt.
 
-\subsubsection{Evaluationsmetriken}
-Neben klassischen Machine-Learning-Metriken (F1-Score, AUC) werden spezifische ökonomische Kennzahlen betrachtet:
-\begin{itemize}
-    \item \textbf{Expected Savings:} Berechnung der erwarteten Einsparungen basierend auf den Modellvorhersagen.
-    \item \textbf{Spearman-Korrelation:} Begründung für den Einsatz dieser Metrik zur Bewertung der Rangfolge-Stabilität.
-\end{itemize}
+\begin{table}[H]
+    \centering
+    \small
+    \caption{Zentrale Trainingshyperparameter (Basiskonfiguration ohne Gating).}
+    \label{tab:training_hparams}
+    \begin{tabular}{@{}ll@{}}
+        \hline
+        \textbf{Parameter} & \textbf{Wert} \\
+        \hline
+        Seed & 777 \\
+        Optimizer & AdamW \\
+        Lernrate & $1\cdot 10^{-5}$ \\
+        LR-Scheduler & Linear Warmup (0{,}1) + Cosine \\
+        Batchgröße (Train / Eval) & 64 / 128 \\
+        Epochen (min / max) & 1 / 4 \\
+        Early Stopping & Patience 5, Monitor \texttt{val/average\_\allowbreak precision} \\
+        Validierungsanteil & \texttt{validation\_\allowbreak fraction}=0{,}2 \\
+        \hline
+\end{tabular}
+\end{table}
+
+\paragraph{Validierung, Hardware und Mixed Precision.}
+Die Validierung erfolgt über einen festen Train/Val/Test-Split gemäß der Datenpipeline (vgl.\ Abschnitt \ref{sec:data_basis}). Alle Experimente werden auf einer einzelnen NVIDIA Tesla V100-PCIE-32GB ausgeführt. Zur Beschleunigung wird Mixed Precision eingesetzt, wodurch sich Rechenzeit und Speicherbedarf bei vergleichbarer Modellqualität reduzieren lassen.
+
+\paragraph{Evaluationsmetriken.}
+Als Kernmetriken werden Average Precision (AP) und AUC-ROC berichtet. AP ist für unausgeglichene Klassenverteilungen besonders aussagekräftig, da sie die Precision-Recall-Kurve über alle Entscheidungsschwellen zusammenfasst. AUC-ROC misst die Fähigkeit des Modells, positive gegenüber negativen Beispielen korrekt zu ranken, unabhängig von einem festen Schwellenwert. In Multi-Class-Settings werden beide Kennzahlen one-vs-rest pro Klasse berechnet. Zusätzlich werden die Klassen binarisiert (positiv vs.\ Klasse 0), um eine konsistente Vergleichbarkeit über Datensätze hinweg zu gewährleisten.
+
 
 \newpage
 \subsection{Ablationsstudien}
@@ -191,4 +206,4 @@ Tokenizer & TabTokenizer: V1 /\ V2 (per-Feature-Tokenisierung) & Prüfen, ob fei
 \end{tabular}
 \end{table}
 
-Im Fokus stehen (i) die Positionierung der Cross-Attention (Early/Late/Hybrid), (ii) die Sensitivität gegenüber der Anzahl der Tab Tokens $n_{\text{tab}}$ im Hybrid-Setup, (iii) ein Gating-Mechanismus nach Flamingo zur stabileren Fusion sowie (iv) ein \textit{TabTokenizer V2} mit per-Feature-Tokenisierung zur potenziell besseren Interpretierbarkeit.
+Im Fokus stehen (i) die Positionierung der Cross-Attention (Early/Late/Hybrid), (ii) die Sensitivität gegenüber der Anzahl der Tab Tokens $n_{\text{tab}}$ im Hybrid-Setup, (iii) ein Gating-Mechanismus nach Flamingo zur stabileren Fusion sowie (iv) ein \textit{TabTokenizer V2} mit per-Feature-Tokenisierung zur potenziell besseren Interpretierbarkeit. Für die \emph{Gating}-Ablation wurden die im Flamingo-Ansatz beschriebenen trainingsseitigen Anpassungen gezielt übernommen (Encoder-Freezing und erhöhte Lernrate für die Gate-Parameter; vgl.\ Abschnitt \ref{sec:training_setup}), da andernfalls die zusätzlichen Freiheitsgrade des Gates im Fine-Tuning empirisch instabil waren.

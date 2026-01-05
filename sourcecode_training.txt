@@ -1,0 +1,888 @@
+import hashlib
+from typing import Any
+
+from fvcore.nn import FlopCountAnalysis
+import torch
+from lightning import LightningModule
+from omegaconf import DictConfig
+from torch import Tensor
+from torchmetrics import (
+    AUROC,
+    AveragePrecision,
+    MaxMetric,
+    MeanMetric,
+    MetricCollection,
+    MinMetric,
+)
+
+from hf4_regress_exploration.model.bert_variants import get_model
+
+
+class MetricsAggregator:
+    """
+    Computes the metrics aggregated over the classes.
+    For this purpose, input data is binarized before updating and
+    computing the metrics in case of multiclass classification.
+    """
+
+    def __init__(self, prefix: str | None = None):
+        self.binarized_average_precision = AveragePrecision(task="binary")
+        self.binarized_roc = AUROC(task="binary")
+        self.prefix = prefix
+
+    def __call__(self, *args):
+        return self.update(*args)
+
+    def update(self, y_score, y_true):
+        """
+        Computes metric aggregating them across positive
+        and negative classes, to provide an overall view
+        of the model performance.
+
+        In case of multiclass classification, the samples are
+        binarized before computing the metrics: ground truth labels
+        are binarized by collapsing all positively labelled samples to the
+        same class.
+        Scores are binarized by considering 1 - proba_0 (model
+        confidence in positive classes) the estimated probability.
+        """
+        # Binarizing the data.
+        binarized_y_true = (y_true != 0).long()
+        binarized_y_score = 1 - y_score[:, 0]
+        # Metrics update their status internally and the current eval result
+        # is returned in a dictionary having metric names as keys.
+        return {
+            (
+                f"{self.prefix}average_precision"
+                if self.prefix is not None
+                else "average_precision"
+            ): self.binarized_average_precision(binarized_y_score, binarized_y_true),
+            (
+                f"{self.prefix}roc_score" if self.prefix is not None else "roc_score"
+            ): self.binarized_roc(binarized_y_score, binarized_y_true),
+        }
+
+    def compute(self, **args):
+        return {
+            (
+                f"{self.prefix}average_precision"
+                if self.prefix is not None
+                else "average_precision"
+            ): self.binarized_average_precision.compute(),
+            (
+                f"{self.prefix}roc_score" if self.prefix is not None else "roc_score"
+            ): self.binarized_roc.compute(),
+        }
+
+    def reset(self):
+        self.binarized_average_precision.reset()
+        self.binarized_roc.reset()
+
+
+class GeneralLitModule(LightningModule):
+    """Example of a `LightningModule` for Regress classification.
+
+    A `LightningModule` implements 8 key methods:
+
+    ```python
+    def __init__(self):
+    # Define initialization code here.
+
+    def setup(self, stage):
+    # Things to setup before each stage, 'fit', 'validate', 'test', 'predict'.
+    # This hook is called on every process when using DDP.
+
+    def training_step(self, batch, batch_idx):
+    # The complete training step.
+
+    def validation_step(self, batch, batch_idx):
+    # The complete validation step.
+
+    def test_step(self, batch, batch_idx):
+    # The complete test step.
+
+    def predict_step(self, batch, batch_idx):
+    # The complete predict step.
+
+    def configure_optimizers(self):
+    # Define and configure optimizers and LR schedulers.
+    ```
+
+    Docs:
+        https://lightning.ai/docs/pytorch/latest/common/lightning_module.html
+    """
+
+    def __init__(
+        self,
+        cfg_tuning: DictConfig,
+        extra_data_dim: int,
+        num_labels: int = 2,
+        **kwargs,
+    ) -> None:
+        """ """
+        super().__init__()
+
+        # this line allows to access init params with 'self.hparams' attribute
+        # also ensures init params will be stored in ckpt
+        self.save_hyperparameters(logger=False)
+        self._complexity_logged: bool = False
+        self.cfg_tuning = cfg_tuning
+        if cfg_tuning["additional_pretraining"]:
+            model_dir = cfg_tuning["pretrained_model_dir_custom"]
+        else:
+            model_dir = cfg_tuning["pretrained_model_dir"]
+
+        # Manually updating the kwargs dict for better readability.
+        optional_kwargs_keys = [
+            "sep_token_id",
+            "hidden_dim",
+            "num_tab_tokens",
+            "hidden_size",
+            "hidden_dropout_prob",
+            "cross_attention_positions",
+            "cross_attention_intermediate_size",
+            "cross_attention_heads"
+        ]
+        
+        for key in optional_kwargs_keys:
+            value = cfg_tuning.architecture.get(key, None)
+            if value is not None:
+                kwargs[key] = value
+
+        self.model = get_model(
+            bert_architecture_name=cfg_tuning.architecture.bert_architecture_name,  # this gives both the model and potentially the sep token id.
+            model_dir=model_dir,
+            extra_data_dim=extra_data_dim,
+            num_labels=num_labels,
+            model_type=cfg_tuning.get("model_type", "bert"),
+            **kwargs,
+        )
+        self.num_labels = num_labels
+
+        # lighting behaviour change in 2.2
+        # must convert into train mode https://github.com/Lightning-AI/pytorch-lightning/issues/19467
+        self.model.train()
+
+        # loss function
+        self.criterion = torch.nn.CrossEntropyLoss()
+        self.softmax = torch.nn.Softmax(dim=1)
+        # Metrics are defined based on whether binary or multiclass
+        # classification is performed.
+        # In case of multiclass classification, aggregated metric values
+        # are also computed after binarizing the problem.
+        metrics = MetricCollection(
+            {
+                "roc": AUROC(
+                    task="binary" if self.num_labels == 2 else "multiclass",
+                    num_classes=self.num_labels,
+                    average="none",  # ensures one vs. rest with results for each class without aggregation in multiclass, ignored in binary setting.
+                ),
+                "average_precision": AveragePrecision(
+                    task="binary" if self.num_labels == 2 else "multiclass",
+                    num_classes=self.num_labels,
+                    average="none",  # ensures one vs. rest with results for each class without aggregation in multiclass, ignored in binary setting.
+                ),
+            }
+        )
+        # Train metrics are logged both on_step and on_epoch.
+        # Val metrics are only logged on_epoch.
+        self.train_metrics = metrics.clone(prefix="train/")
+        self.val_metrics = metrics.clone(prefix="val/")
+        self.test_metrics = metrics.clone(prefix="test/")
+
+        # Aggregated metrics are used to return the result of the aggregation
+        # over classes in case of multiclass classification. Before computing the
+        # metrics, the ground truth and predicted labels are binarized.
+        if self.num_labels > 2:
+            self.aggregated_train_metrics = MetricsAggregator(prefix="train/")
+            self.aggregated_val_metrics = MetricsAggregator(prefix="val/")
+            self.aggregated_test_metrics = MetricsAggregator(
+                prefix="test/"
+            )  # defined but not used
+
+        # for averaging loss across batches
+        # Train loss are logged both on_step and on_epoch.
+        # Val loss are only logged on_epoch.
+        self.train_loss = MeanMetric()
+        self.val_loss = MeanMetric()
+        self.test_loss = MeanMetric()
+
+        # for tracking best so far validation metric
+        if self.cfg_tuning.scheduler.mode == "min":
+            self.val_best = MinMetric()
+        else:
+            # get an error anyway if not min or max due to scheduler
+            self.val_best = MaxMetric()
+
+        # Saving warmup ratio to later deal with schedulers.
+        self.warmup_ratio = cfg_tuning.scheduler.warmup_ratio
+
+    def __log_per_class_metrics(
+        self, multiclass_metrics: dict[str, Any], on_event: str | None = "step"
+    ):
+        """
+        Manually logs metrics for each class without aggregation, ignoring
+        values related to the negative class.
+
+        In the per-step computation procedure, it might
+        happen that the scores for some classes are set to nan, as the classes
+        might not be represented in the processed batch and some metrics do not support a
+        numerical default value. As a default value
+        cannot be set when initializing the metric objects, the adjustment is performed here
+        and potential nan values are set to 0.0.
+        """
+
+        # Check if log event is correct.
+        if on_event not in ["step", "epoch", None]:
+            raise ValueError(
+                "Log event is not supported. Change it to one between 'step', 'epoch' and None."
+            )
+        # Manually split and log multiclass metrics.
+        for (
+            multiclass_metric_name,
+            multiclass_metric_scores,
+        ) in multiclass_metrics.items():
+            for class_idx, multiclass_metric_score in enumerate(
+                multiclass_metric_scores
+            ):
+                # Avoid logging the base (negative) class.
+                if class_idx != 0:
+                    self.log(
+                        name=(
+                            f"{multiclass_metric_name}_{class_idx}_{on_event}"
+                            if on_event is not None
+                            else f"{multiclass_metric_name}_{class_idx}"
+                        ),
+                        value=torch.nan_to_num(multiclass_metric_score, nan=0.0),
+                    )
+
+    def __log_binary_metrics(
+        self, binary_metrics: dict[str, Any], on_event: str | None = "step"
+    ):
+        """Manually logs metrics for binary classification setting."""
+
+        # Check if log event is correct.
+        if on_event not in ["step", "epoch", None]:
+            raise ValueError(
+                "Log event is not supported. Change it to one between 'step', 'epoch' and None."
+            )
+        # Manually split and log binary metrics.
+        for (
+            binary_metric_name,
+            binary_metric_score,
+        ) in binary_metrics.items():
+            self.log(
+                name=(
+                    f"{binary_metric_name}_{on_event}"
+                    if on_event is not None
+                    else f"{binary_metric_name}"
+                ),
+                value=torch.nan_to_num(binary_metric_score, nan=0.0),
+            )
+
+    def forward(
+        self, input_ids: Tensor, attention_mask: Tensor, extra_data: Tensor
+    ) -> Tensor:
+        outputs = self.model(
+            **{
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+                "extra_data": extra_data,
+            }
+        )
+        return outputs
+
+    def on_train_start(self) -> None:
+        """Lightning hook that is called when training begins."""
+        # by default lightning executes validation step sanity checks before training starts,
+        # so it's worth to make sure validation metrics don't store results from these checks
+        self.val_loss.reset()
+        self.val_metrics.reset()
+        if self.num_labels > 2:
+            self.aggregated_val_metrics.reset()
+        self.val_best.reset()
+
+    def model_step(
+        self, batch: tuple[Tensor, Tensor, Tensor, Tensor]
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        """Perform a single model step on a batch of data.
+
+        :param batch: tuple (input_ids, attention_mask, labels, extra_data).
+
+        :return: A tuple containing (in order):
+            - A tensor of losses.
+            - A tensor of Probability of label 1.
+            - A tensor of target labels.
+        """
+
+        input_ids, attention_mask, labels, extra_data = batch
+        outputs = self.forward(input_ids, attention_mask, extra_data)
+
+        logits = outputs.logits
+        loss = self.criterion(logits, labels.long())
+        probas = self.softmax(logits)
+        # Return logits over all classes for
+        # both settings: binary and multiclass.
+
+        return loss, probas, labels
+
+    def training_step(
+        self, batch: tuple[Tensor, Tensor, Tensor, Tensor], batch_idx: int
+    ) -> Tensor:
+        """
+        Perform a single training step on a batch of data from the training set.
+
+        In case of binary classification, logs the obtained metrics.
+
+        In case of multiclass task, logs per-class metrics as well as aggregated values
+        (binary metrics on binarized problem).
+
+        Parameters
+        ----------
+        batch : tuple[Tensor, Tensor, Tensor, Tensor]
+            (input_ids, attention_mask, labels, extra_data)
+        batch_idx : int
+            The index of the current batch.
+
+        Returns
+        -------
+        Tensor
+            A tensor of losses between model predictions and targets.
+        """
+        loss, pred_probas, targets = self.model_step(batch)
+        pred_probas_for_metrics = (
+            pred_probas if self.num_labels > 2 else pred_probas[:, 1]
+        )
+
+        # update and log metrics
+        # Train loss and metric: on_step done now, on_epoch done before resetting.
+        batch_train_loss = self.train_loss(loss)
+        # TODO: think about not logging train metrics on step (noisy).
+        batch_train_metrics = self.train_metrics(
+            pred_probas_for_metrics, targets
+        )  # Value computed based on current batch only. Does not include predictions from previous batches.
+        self.log("train/loss_step", batch_train_loss)
+        if self.num_labels > 2:
+            # Manually split and log per-class metrics.
+            self.__log_per_class_metrics(batch_train_metrics, on_event="step")
+        else:
+            # Logs binary metric without class indices.
+            self.__log_binary_metrics(batch_train_metrics, on_event="step")
+        # Logging learning rate.
+        self.log(
+            name="learning_rate", value=self.trainer.optimizers[0].param_groups[0]["lr"]
+        )
+        # In case of multiclass classification, computing aggregated metrics. Classes
+        # are binarized first. This way, a single value agnostic to the class idx is
+        # given to represent the current performance of the model on each metric.
+        if self.num_labels > 2:
+            batch_aggregated_train_metrics = self.aggregated_train_metrics.update(
+                pred_probas, targets
+            )
+            self.__log_binary_metrics(batch_aggregated_train_metrics, on_event="step")
+
+        # return loss or backpropagation will fail
+        return loss
+
+    def on_train_epoch_end(self) -> None:
+        """Logs on_epoch train loss and metrics and resets state for MetricsCollection."""
+        # TODO: remove metrics and loss logging at the end of train epoch. Results are not
+        # meaningful as they are the average over different model configurations (params keep getting updated).
+
+        # Aggregating the stream of loss values saved during the epoch.
+        epoch_train_loss = self.train_loss.compute()
+        self.log("train/loss_epoch", epoch_train_loss)
+        # Resetting the loss state.
+        self.train_loss.reset()
+
+        # Aggregating the stream of metrics values saved during the epoch.
+        epoch_train_metrics = self.train_metrics.compute()
+        if self.num_labels > 2:
+            # Manually split and log per-class metrics.
+            self.__log_per_class_metrics(epoch_train_metrics, on_event="epoch")
+        else:
+            # Logs binary metric without class indices.
+            self.__log_binary_metrics(epoch_train_metrics, on_event="epoch")
+        self.train_metrics.reset()
+
+        # In case of multiclass classification, computing aggregated metrics. Classes
+        # are binarized first. This way, a single value agnostic to the class idx is
+        # given to represent the current performance of the model on each metric.
+        if self.num_labels > 2:
+            epoch_aggregated_train_metrics = self.aggregated_train_metrics.compute()
+            self.__log_binary_metrics(epoch_aggregated_train_metrics, on_event="epoch")
+            self.aggregated_train_metrics.reset()
+
+    def validation_step(
+        self, batch: tuple[Tensor, Tensor, Tensor, Tensor], batch_idx: int
+    ) -> None:
+        """Perform a single validation step on a batch of data from the validation set.
+
+        Parameters
+        ----------
+        batch : tuple[Tensor, Tensor, Tensor, Tensor]
+            (input_ids, attention_mask, labels, extra_data)
+        batch_idx : int
+            The index of the current batch.
+        """
+        loss, pred_probas, targets = self.model_step(batch)
+        pred_probas_for_metrics = (
+            pred_probas if self.num_labels > 2 else pred_probas[:, 1]
+        )
+
+        # update and log metrics
+        # Both metrics and loss are logged at the end of the validation epoch
+        # and no metrics are logged at batch level.
+        self.val_loss(loss)
+        self.val_metrics(pred_probas_for_metrics, targets)
+
+        # In case of multiclass classification, updating aggregated metrics. Classes
+        # are binarized first. This way, a single value agnostic to the class idx is
+        # given to represent the current performance of the model on each metric.
+        if self.num_labels > 2:
+            self.aggregated_val_metrics.update(pred_probas, targets)
+
+    def on_validation_epoch_end(self) -> None:
+        """Logs on_epoch val loss and metrics and resets state for MetricsCollection."""
+        # Aggregating the stream of loss values saved during the epoch.
+        epoch_val_loss = self.val_loss.compute()
+        self.log("val/loss", epoch_val_loss)
+        # Resetting the loss state.
+        self.val_loss.reset()
+
+        # Aggregating the stream of metrics values saved during the epoch.
+        epoch_val_metrics = self.val_metrics.compute()
+        if self.num_labels > 2:
+            # Manually split and log per-class metrics.
+            self.__log_per_class_metrics(epoch_val_metrics, on_event=None)
+        else:
+            # Logs binary metric without class indices.
+            self.__log_binary_metrics(epoch_val_metrics, on_event=None)
+        self.val_metrics.reset()
+        # TODO: support other metrics for early stopping.
+        # In case of multiclass classification, computing aggregated metrics. Classes
+        # are binarized first. This way, a single value agnostic to the class idx is
+        # given to represent the current performance of the model on each metric.
+        if self.num_labels > 2:
+            epoch_aggregated_val_metrics = self.aggregated_val_metrics.compute()
+            self.__log_binary_metrics(epoch_aggregated_val_metrics, on_event=None)
+            self.aggregated_val_metrics.reset()
+            # Updating the maximum over aggregated average precision.
+            self.val_best(
+                epoch_aggregated_val_metrics[
+                    (
+                        f"{self.aggregated_val_metrics.prefix}average_precision"
+                        if self.aggregated_val_metrics.prefix is not None
+                        else "average_precision"
+                    )
+                ]
+            )  # updated but never resetted as it acts across validation epochs.
+            self.log(name="val/best_average_precision", value=self.val_best.compute())
+        else:
+            # Updating the maximum over average precision.
+            self.val_best(
+                epoch_val_metrics["val/average_precision"]
+            )  # updated but never resetted as it acts across validation epochs.
+            self.log(name="val/best_average_precision", value=self.val_best.compute())
+
+    def test_step(
+        self, batch: tuple[Tensor, Tensor, Tensor, Tensor], batch_idx: int
+    ) -> None:
+        raise NotImplementedError(
+            "Currently evalate by using predict step. Might change in future"
+        )
+
+    def predict_step(
+        self, batch: tuple[Tensor, Tensor, Tensor, Tensor], batch_idx: int
+    ) -> Tensor:
+        """The predict step works because we have labels even for unlabeled data.
+        If this changes in the future put adjust.
+
+        Parameters
+        ----------
+        batch : tuple[Tensor, Tensor, Tensor, Tensor]
+            (input_ids, attention_mask, labels, extra_data)
+        batch_idx : int
+            The index of the current batch.
+
+        Returns
+        -------
+        Tensor
+            pred_probas
+        """
+        _, pred_probas, _ = self.model_step(batch)
+        return pred_probas
+
+    def setup(self, stage: str) -> None:
+        """Lightning hook that is called at the beginning of fit (train + validate), validate,
+        test, or predict.
+
+        This is a good hook when you need to build models dynamically or adjust something about
+        them. This hook is called on every process when using DDP.
+
+        :param stage: Either `"fit"`, `"validate"`, `"test"`, or `"predict"`.
+        """
+        if self.cfg_tuning.compile and stage == "fit":
+            self.model = torch.compile(self.model)
+            # Defining steps variables to correctly handle schedulers.
+        elif stage == "fit":
+            self.total_steps = self.trainer.estimated_stepping_batches
+            self.warmup_steps = round(self.total_steps * self.warmup_ratio)
+
+    def configure_optimizers(self) -> dict[str, Any]:
+        """Choose what optimizers and learning-rate schedulers to use in your optimization.
+
+        :return: A dict containing the configured optimizers and learning-rate schedulers to be used for training.
+        """
+        optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.cfg_tuning.lr)
+
+        # CosineAnnealingLR scheduler + Warmup has to be implemented manually.
+        def linear_warmup_lr(step):
+            """Linearly increases the lr from 0 to LR_max in T_warmup_steps."""
+            if step < self.warmup_steps:
+                return float(step) / float(max(1, self.warmup_steps))
+            return 1.0
+
+        warmup_scheduler = torch.optim.lr_scheduler.LambdaLR(
+            optimizer, lr_lambda=linear_warmup_lr
+        )
+        cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=self.total_steps - self.warmup_steps
+        )
+        sequential_scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer,
+            schedulers=[warmup_scheduler, cosine_scheduler],
+            milestones=[self.warmup_steps],
+        )
+
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": sequential_scheduler,
+                "interval": "step",
+                "name": "learning_rate",
+            },
+        }
+    
+    @torch.no_grad()
+    def _compute_and_log_model_complexity(self, example_inputs: Any) -> None:
+        """
+        Compute params and FLOPs once and log them to MLflow + logger.
+    
+        What this does (clean & self-contained):
+        1) Extract and normalize example inputs (ids, mask, extra) and cache their shapes on first run.
+        Afterwards we always build canonical, deterministic tensors with the same shapes so FLOPs
+        are stable across runs (independent of varying batch sizes or sequence lengths).
+        2) Register a custom fvcore handle for PyTorch's `aten::scaled_dot_product_attention` so the
+        attention FLOPs are counted (QK^T + softmax + AV).
+        3) Run fvcore FlopCountAnalysis on a small adapter that maps positional args to your model's kwargs.
+        4) Log total parameter count and FLOPs to the Lightning logger (→ MLflow).
+        """
+        # Only rank 0 to avoid duplicate logs in DDP
+        if getattr(self, "global_rank", 0) != 0:
+            return
+    
+        # Helper: find first tensor & coerce example inputs to (ids, mask, extra)
+        def _first_tensor(x: Any) -> torch.Tensor | None:
+            if isinstance(x, torch.Tensor):
+                return x
+            if isinstance(x, (list, tuple)):
+                for xi in x:
+                    t = _first_tensor(xi)
+                    if t is not None:
+                        return t
+            if isinstance(x, dict):
+                for xi in x.values():
+                    t = _first_tensor(xi)
+                    if t is not None:
+                        return t
+            return None
+    
+        def _to_tensor(x: Any, device: torch.device) -> torch.Tensor:
+            if isinstance(x, torch.Tensor):
+                return x.to(device)
+            return torch.as_tensor(x, device=device)
+    
+        # Normalize input format to a tuple (input_ids, attention_mask, extra_data)
+        # and move to the same device as the model / first tensor.
+        first = _first_tensor(example_inputs)
+        device = first.device if first is not None else (next(self.model.parameters()).device)  # type: ignore
+    
+        if isinstance(example_inputs, (list, tuple)):
+            # expected: (input_ids, attention_mask, labels, extra_data)
+            input_ids      = _to_tensor(example_inputs[0], device).long()
+            attention_mask = _to_tensor(example_inputs[1], device).long()
+            extra_data     = _to_tensor(example_inputs[3], device).float()
+        elif isinstance(example_inputs, dict):
+            input_ids      = _to_tensor(example_inputs["input_ids"], device).long()
+            attention_mask = _to_tensor(example_inputs["attention_mask"], device).long()
+            extra_key      = "extra_data" if "extra_data" in example_inputs else "tab_tokens"
+            extra_data     = _to_tensor(example_inputs[extra_key], device).float()
+        else:
+            raise TypeError(f"Unsupported example_inputs type for FLOPs: {type(example_inputs)}")
+    
+        # Cache the shapes the first time
+        if not hasattr(self, "_complexity_input_spec"):
+            self._complexity_input_spec = {
+                "ids_shape": tuple(input_ids.shape),           # (B, T)
+                "mask_shape": tuple(attention_mask.shape),     # (B, T)
+                "extra_shape": tuple(extra_data.shape),        # (B, F)
+            }
+    
+        ids_shape   = self._complexity_input_spec["ids_shape"]
+        mask_shape  = self._complexity_input_spec["mask_shape"]
+        extra_shape = self._complexity_input_spec["extra_shape"]
+    
+        # Build canonical example tensors
+        input_ids_canon      = torch.zeros(ids_shape,   dtype=torch.long,  device=device)
+        attention_mask_canon = torch.ones( mask_shape,  dtype=torch.long,  device=device)
+        extra_data_canon     = torch.zeros(extra_shape, dtype=torch.float, device=device)
+    
+        canonical_inputs = (input_ids_canon, attention_mask_canon, extra_data_canon)
+    
+        # Parameter count
+        total_params = sum(p.numel() for p in self.model.parameters(True))  # type: ignore
+    
+        # FLOPs via fvcore with custom SDPA handle
+        was_training = self.model.training  # type: ignore
+        self.model.eval()                   # type: ignore
+        self.model.to(device)               # type: ignore
+    
+        # Minimal adapter to map positional → keyword args expected by your model
+        class _KwargAdapter(torch.nn.Module):
+            def __init__(self, model):
+                super().__init__()
+                self.model = model
+            def forward(self, input_ids, attention_mask, extra_data):
+                return self.model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    extra_data=extra_data,
+                )
+ 
+        adapter = _KwargAdapter(self.model).to(device)  # type: ignore
+    
+        # Custom handle for `aten::scaled_dot_product_attention`
+        def _sdpa_flop_handle(*args) -> int:
+            # Parse arguments
+            if len(args) == 2:
+                inputs, _outputs = args
+            elif len(args) == 3:
+                _graph, inputs, _outputs = args
+            else:
+                return 0
+    
+            # inputs: [q, k, v, ...]; shapes typically (B, H, L, Dh)
+            q = inputs[0]
+            B = H = Lq = Dh = None
+            try:
+                B, H, Lq, Dh = q.shape  # type: ignore[attr-defined]
+            except Exception:
+                try:
+                    # JIT Value path
+                    sizes = q.type().sizes()  # type: ignore[attr-defined]
+                    B, H, Lq, Dh = sizes
+                except Exception:
+                    return 0
+    
+            # Lk may differ from Lq; infer from k if possible
+            Lk = None
+            try:
+                k = inputs[1]
+                try:
+                    Lk = k.shape[2]  # type: ignore[attr-defined]
+                except Exception:
+                    Lk = k.type().sizes()[2]  # type: ignore[attr-defined]
+            except Exception:
+                Lk = Lq
+    
+            qk      = 2 * B * H * Lq * Lk * Dh
+            softmax =     B * H * Lq * Lk
+            av      = 2 * B * H * Lq * Lk * Dh
+            return int(qk + softmax + av)
+    
+        # Run analysis
+        analysis = FlopCountAnalysis(adapter, canonical_inputs)  # type: ignore
+        # Register our custom handle for SDPA
+        try:
+            analysis.set_op_handle("aten::scaled_dot_product_attention", _sdpa_flop_handle)  # type: ignore
+        except Exception:
+            # Older fvcore versions: fall back silently; FLOPs will be an undercount
+            pass
+    
+        total_flops = int(analysis.total())
+    
+        if was_training:
+            self.model.train()  # type: ignore
+    
+        # Logging (Lightning → MLflow)
+        self.log("model/parameters_total", float(total_params), rank_zero_only=True)
+        self.log("model/flops_total",      float(total_flops),  rank_zero_only=True)
+    
+        self._complexity_logged = True
+    
+    def on_train_batch_start(self, batch, batch_idx: int) -> int | None:
+        if not self._complexity_logged:
+            self._compute_and_log_model_complexity(batch)
+        self._complexity_logged = True
+        return super().on_train_batch_start(batch, batch_idx)
+
+
+def tensor_hash(tensor):
+    tensor_np = tensor.detach().cpu().numpy()  # Convert to NumPy array if on GPU
+    tensor_bytes = tensor_np.tobytes()  # Convert to bytes
+    return hashlib.sha256(tensor_bytes).hexdigest()
+
+    """
+    Adapter, that converts Keyword-Args in positional Args.
+    """
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+ 
+    def forward(self, input_ids, attention_mask, extra_data):
+        return self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            extra_data=extra_data,
+        )
+
+------- GENERAL BERT CONFIG: -------
+
+defaults:
+  - data: bert
+  - callbacks: default
+  - architecture: sum_bert # TODO: anpassen
+
+model_type: bert
+
+# hyperparameter for NN optimizer
+pretrained_model_dir: "/domino/edv/pvc-hf4schaden/regress/cache/huggingface/hub/models--deepset--gbert-base/snapshots/4a45e506eccc3405ed2e2a0502995d3f7e483509/"
+pretrained_model_dir_custom: "/domino/edv/pvc-hf4schaden/mlflow/963120199102047965/c142327e5caf407a808679a07ccb2920/artifacts/pretrained_model" # see mlflow run "full pretraining" in the "bert additional pretraining" experiment
+
+# Choose BERT type
+# choose in architecture folder
+# bert_architecture_name: base # "base" / "concat" / "sum"
+
+# Choose whether to use additionally pretrained model or basic Gbert
+additional_pretraining: True
+compile: False
+
+lr: 1e-5
+validation_fraction: 0.2
+# `train_imbalance_0_to_1` defines the imbalance between the the two target classes n(0)/n(1)
+# in training achieved by sub-sampling form the 0-class
+# if set to `-1`, no sub-sampling will be used
+train_imbalance_0_to_1: 31 # Set to -1 when running propensity model to avoid error
+
+trainer:
+  default_root_dir: ${paths.output_dir}
+  # From previous runs, it seems the maximum number of epochs reached
+  # before the early stopping callback is triggered. It is essential
+  # to better estimate the number of training steps, therefore
+  # allowing to switch from lr warmup to cosine scheduling.
+  max_epochs: 4 # maximum number of training epochs
+  min_epochs: 1 # min number of training epochs which prevents early stopping
+  log_every_n_steps: ${tuning_parameters.trainer.val_check_interval}
+
+  # the hardware options are (cpu, gpu, and others only relevant if switch to cloud)
+  # leave null to auto set gpu if torch.cuda.is_available() else cpu
+  accelerator: null 
+  devices: 1 # multinode training (relevant for cloud)
+
+  # mixed precision for extra speed-up
+  # precision: 16
+
+  # perform a validation loop every N training epochs
+  check_val_every_n_epoch: null
+
+  # How often to check the validation set. Pass a float in the range [0.0, 1.0] to check after a fraction of the training epoch. 
+  # Pass an int to check after a fixed number of training batches. 
+  # An int value can only be higher than the number of training batches when check_val_every_n_epoch=None, 
+  # which validates after every N training batches across epochs or during iteration-based training. Default: 1.0.
+  val_check_interval: 500
+
+  # set True to to ensure deterministic results
+  # makes training slower but gives more reproducibility than just setting seeds
+  deterministic: False
+
+# Arguments to setup schedulers
+scheduler:
+  # deep structure enables hydra instatiate which might latter be useful for fast switching between schedulers
+  mode: max # ensure it is aligned to the choice of tuning_metric
+  warmup_ratio: 0.1
+  # verbose: True  # deprecated
+
+# Choose tuning_metric
+# the scheduler mode should match
+tuning_metric: "average_precision"  # "neg_average_precision" / "neg_auc" / "log_loss"
+
+
+excluded_variables: [
+  "free_text_length",
+  "free_text_words",
+]
+
+"tokenization_analysis": False
+
+# remove ckpt generated during training from disc
+# does not affect saving to mlflow
+remove_model_from_disc: True
+# to resume training or only do prediction step if necessary
+ckpt_path: null
+
+------- CROSS BERT CONFIG: -------
+
+bert_architecture_name: cross # "base" / "concat" / "sum" / "sum_2sentences" / "cross"
+
+cross_attention_positions: 
+  early: False
+  late: True
+cross_attention_intermediate_size: 2048 # dimension of FFN hidden layer 
+cross_attention_heads: 8
+
+num_tab_tokens: 8
+hidden_size: 768
+
+hidden_dropout_prob: 0.1
+
+
+------- CONCAT BERT CONFIG: -------
+
+hidden_dim: 256 # between [32, 768 + extra_data_dim] is a reasonable range
+
+------- BERT DATA CONFIG: -------
+
+# might want to put all the data related configs in here and from bert.yaml
+defaults:
+  - default
+
+batch_size: 64
+eval_batch_size: 128
+
+------- CALLBACKS: -------
+
+defaults:
+  - model_checkpoint # saves ckpts at the end of validation epochs based on tuning metrics and top_k params
+  - early_stopping
+  - lr_monitor  # automatically logs the learning_rate after applying the right scheduler based on the step.
+  #- model_summary
+  #- rich_progress_bar
+  - _self_
+
+model_checkpoint:
+  dirpath: ${paths.output_dir}/checkpoints
+  filename: "epoch_{epoch:03d}"
+  monitor: val/${tuning_parameters.tuning_metric}
+  mode: ${tuning_parameters.scheduler.mode}
+  save_last: False
+  auto_insert_metric_name: False
+
+early_stopping:
+  monitor: "val/${tuning_parameters.tuning_metric}"
+  patience: 5
+  mode: ${tuning_parameters.scheduler.mode}
+
+lr_monitor:
+  logging_interval: step
+
