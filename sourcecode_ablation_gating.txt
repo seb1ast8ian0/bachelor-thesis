@@ -1,0 +1,479 @@
+from typing import Optional
+import logging
+
+import torch.nn as nn
+import torch
+
+logger = logging.getLogger(__name__)
+
+class GatedCrossAttentionBlock(nn.Module):
+    """Cross-attention (CLS → tab tokens) with Pre-LN + FFN + Flamingo-style gating.
+ 
+    A single text summary token (e.g., BERT [CLS], shape: (B, 1, H)) attends
+    over a short sequence of tab tokens (B, T, H). The block applies:
+    LayerNorm → MultiheadAttention (Q=CLS, K/V=tab tokens) → **Gated Add** →
+    LayerNorm → Feed-Forward → **Gated Add**.
+ 
+    Gating (Flamingo-like):
+        y = y + tanh(alpha_xattn) * Attention(q=y, kv=x)
+        y = y + tanh(alpha_dense) * FFN(y)
+ 
+    Shapes:
+        cls_token:  (B, 1, H)
+        tab_tokens: (B, T_tab, H)
+        tab_mask:   (B, T_tab) with 1=keep, 0=pad
+        output:     (B, 1, H)
+ 
+    Args:
+        embed_dim: Hidden size H. Must match both cls_token and tab_tokens.
+        num_heads: Number of attention heads.
+        dim_feedforward: FFN hidden size.
+        dropout: Dropout probability for attention and FFN.
+        batch_first: Expect inputs as (B, T_tab, H) if True.
+ 
+        use_gating: Enable Flamingo-style gating (default: True).
+        init_alpha_xattn: Initialization for attention gate (default: 0.0).
+        init_alpha_dense: Initialization for FFN gate (default: 0.0).
+    """
+ 
+    def __init__(
+        self,
+        embed_dim: int,
+        num_heads: int,
+        dim_feedforward: int = 2048,
+        dropout: float = 0.1,
+        batch_first: bool = True,
+        *,
+        use_gating: bool = True,
+        init_alpha_xattn: float = 0.0,
+        init_alpha_dense: float = 0.0,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        self.attention = nn.MultiheadAttention(
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=batch_first,
+        )
+        self.layer_norm_1 = nn.LayerNorm(embed_dim, eps=1e-5)  # Pre-LN for attention
+        self.feed_forward_network = nn.Sequential(
+            nn.Linear(embed_dim, dim_feedforward),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(dim_feedforward, embed_dim),
+        )
+        self.layer_norm_2 = nn.LayerNorm(embed_dim, eps=1e-5)  # Pre-LN for FFN
+        self.dropout_attn = nn.Dropout(dropout)
+        self.dropout_ffn = nn.Dropout(dropout)
+ 
+        # Flamingo-style gates (scalar)
+        self.use_gating = use_gating
+        # Scalars stored as parameters; broadcast works with (B, 1, H)
+        self.alpha_xattn = nn.Parameter(torch.tensor(float(init_alpha_xattn)))
+        self.alpha_dense = nn.Parameter(torch.tensor(float(init_alpha_dense)))
+ 
+        logging.info(
+            "CrossAttentionBlock(init): use_gating=%s, init_alpha_xattn=%.4f, init_alpha_dense=%.4f",
+            self.use_gating, float(init_alpha_xattn), float(init_alpha_dense)
+        )
+    
+    def get_gate_values(self) -> dict[str, float] | None:
+        """Return current tanh-gated scalars for logging, or None if gating disabled."""
+        if not hasattr(self, "use_gating") or not self.use_gating:
+            return None
+        # handle both scalar and potential tensor params
+        def _to_float(x):
+            if isinstance(x, torch.Tensor):
+                return float(torch.tanh(x).detach().cpu().item())
+            return float(x)
+        return {
+            "gate_attn_tanh": _to_float(self.alpha_xattn),
+            "gate_ffn_tanh":  _to_float(self.alpha_dense),
+        }
+ 
+    def forward(
+        self,
+        cls_token: torch.Tensor,
+        tab_tokens: torch.Tensor,
+        tab_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Fuse tabular context into a text summary token via cross-attention (gated)."""
+        key_padding_mask = (tab_mask == 0) if tab_mask is not None else None
+ 
+        assert torch.isfinite(cls_token).all(), "cls_token contains NaNs/Inf!"
+        assert torch.isfinite(tab_tokens).all(), "tab_tokens contains NaNs/Inf!"
+ 
+        # Cross-Attention (Pre-LN)
+        q = self.layer_norm_1(cls_token)
+        k = self.layer_norm_1(tab_tokens)
+        v = k
+ 
+        assert torch.isfinite(q).all(), "q contains NaNs/Inf!"
+        assert torch.isfinite(k).all(), "k contains NaNs/Inf!"
+        assert torch.isfinite(v).all(), "v contains NaNs/Inf!"
+ 
+        use_cuda = q.is_cuda
+        with torch.autocast(device_type="cuda" if use_cuda else "cpu", enabled=False):
+            q32, k32, v32 = q.float(), k.float(), v.float()
+            attn_out32, _ = self.attention(
+                q32, k32, v32,
+                attn_mask=None,
+                key_padding_mask=key_padding_mask,
+                need_weights=False
+            )
+        attn_out = attn_out32.to(q.dtype)
+        assert torch.isfinite(attn_out).all(), "attn_out contains NaNs/Inf!"
+ 
+        # Residual + Flamingo Gating (Attention)
+        if self.use_gating:
+            attn_drop = self.dropout_attn(attn_out)
+            attn_res = torch.tanh(self.alpha_xattn) * attn_drop
+        else:
+            attn_res = self.dropout_attn(attn_out)
+ 
+        attn_sum = cls_token + attn_res
+        assert torch.isfinite(attn_sum).all(), "attn_sum contains NaNs/Inf!"
+ 
+        # FFN (Pre-LN)
+        ffn_out = self.feed_forward_network(self.layer_norm_2(attn_sum))
+        assert torch.isfinite(ffn_out).all(), "ffn_out contains NaNs/Inf!"
+ 
+        # Residual + Flamingo Gating (FFN)
+        if self.use_gating:
+            ffn_drop = self.dropout_ffn(ffn_out)
+            ffn_res = torch.tanh(self.alpha_dense) * ffn_drop
+        else:
+            ffn_res = self.dropout_ffn(ffn_out)
+ 
+        out = attn_sum + ffn_res
+        assert torch.isfinite(out).all(), "xattn_out contains NaNs/Inf!"
+ 
+        return out  # (B, 1, H)
+
+class TabularTokenizer(nn.Module):
+    """Project raw tabular features (B, F) into tab tokens (B, T, H).
+ 
+    Each projection head maps the full feature vector into one H-dim token
+    (B, 1, H). Concatenating `num_tab_tokens` heads yields (B, T, H).
+ 
+    Use a small T (e.g., 2-8) for efficiency; use one token per feature
+    (T=F) for maximum granularity.
+ 
+    Shapes:
+        input:  (B, F)
+        output: (B, T_tab, H)
+ 
+    Args:
+        num_features: Number of raw features F.
+        hidden_size: Target hidden size H (must match text model).
+        num_tab_tokens: Number of tab tokens T to emit (hyperparameter).
+        dropout: Dropout inside each projection head.
+    """
+ 
+    def __init__(
+        self,
+        num_features: int,
+        hidden_size: int,
+        num_tab_tokens: int = 8,
+        dropout: float = 0.1,
+        *args,
+        **kwargs
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.num_tab_tokens = num_tab_tokens
+ 
+        self.projections = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(num_features, hidden_size),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.LayerNorm(hidden_size),
+            )
+            for _ in range(num_tab_tokens)
+        ])
+ 
+    def forward(self, tabular_input: torch.Tensor) -> torch.Tensor:
+        """Tokenize tabular features into T H-dim tokens.
+ 
+        Args:
+            tabular_input: Tensor (B, F). Preprocessed tabular features.
+ 
+        Returns:
+            Tensor (B, T_tabT, H): Concatenation of `num_tab_tokens` projection heads.
+        """
+        tokens = [proj(tabular_input).unsqueeze(1) for proj in self.projections]
+        
+        return torch.cat(tokens, dim=1)  # (B, T_tab, H)
+
+
+
+class CrossBert(BertForSequenceClassification):
+    """BERT classifier with Early and Late cross-attention over tabular tokens.
+ 
+    Pipeline (if enabled):
+        Early:  CLS_from_embeddings  --(cross-attn w/ tab tokens)-->  CLS_early
+                replace token[0] in embeddings with CLS_early
+                ↓
+                BERT Encoder
+                ↓
+        Late:   CLS_from_encoder     --(cross-attn w/ tab tokens)-->  CLS_late
+                ↓
+                Classifier
+ 
+    Notation:
+        B: batch size
+        T: number of tokens (num_tokens)
+        H: hidden size / embedding dimension
+        F: number of raw tabular features
+ 
+    Shapes:
+        input_ids:   (B, T_text)
+        attention_mask: (B, T_text)
+        extra_data:  (B, F)
+        tab tokens:  (B, T_tab, H)
+        CLS token:   (B, 1, H)
+ 
+    Args:
+        cfg: HuggingFace BertConfig.
+        extra_data_dim: Number of raw tabular features F.
+        cross_attention_positions: Dict with keys in {'early','late'} and bool values.
+        num_tab_tokens: Number of tab tokens T_tab produced by the tokenizer.
+        cross_attention_heads: Optional; number of heads for cross-attention (default: cfg.num_attention_heads).
+    """
+ 
+    def __init__(
+        self,
+        cfg: BertConfig,
+        extra_data_dim: int,
+        cross_attention_positions: Dict[str, bool],
+        num_tab_tokens: int = 4,
+        use_gating: bool = True,
+        init_alpha_xattn: float = 0.0,
+        init_alpha_dense: float = 0.0,
+        log_gates_mlflow: bool = True,
+        cross_attention_heads: Optional[int] = None,
+        cross_attention_intermediate_size: Optional[int] = None,
+        **kwargs
+    ):
+        super().__init__(cfg)
+        self.config: BertConfig
+        self.hidden_size = cfg.hidden_size
+        self.num_tab_features = extra_data_dim
+        self.num_tab_tokens = num_tab_tokens
+        self.cross_attn_heads = cross_attention_heads or cfg.num_attention_heads
+        self.intermediate_size = cross_attention_intermediate_size or cfg.intermediate_size
+        self.hidden_dropout_prob = cfg.hidden_dropout_prob
+        self.use_gating = use_gating
+        self.init_alpha_xattn = init_alpha_xattn
+        self.init_alpha_dense = init_alpha_dense
+        self.log_gates_mlflow = log_gates_mlflow
+        self._gate_log_step: int = 1 
+ 
+        # Tokenizer for tabular features: (B, F) -> (B, T_tab, H)
+        self.tabular_tokenizer = TabularTokenizer(
+            num_features=self.num_tab_features,
+            hidden_size=self.hidden_size,
+            num_tab_tokens=self.num_tab_tokens,
+            dropout=self.hidden_dropout_prob,
+        )
+ 
+        # Cross-attention blocks (optional)
+        self.cross_attn_early = None
+        self.cross_attn_late = None
+        if cross_attention_positions.get("early", False):
+            self.cross_attn_early = GatedCrossAttentionBlock(
+                embed_dim=self.hidden_size,
+                num_heads=self.cross_attn_heads,
+                dim_feedforward=self.intermediate_size,
+                dropout=self.hidden_dropout_prob,
+                use_gating=self.use_gating,
+                init_alpha_xattn=self.init_alpha_xattn,
+                init_alpha_dense=self.init_alpha_dense,
+                batch_first=True
+            )
+
+        if cross_attention_positions.get("late", False):
+            self.cross_attn_late = GatedCrossAttentionBlock(
+                embed_dim=self.hidden_size,
+                num_heads=self.cross_attn_heads,
+                dim_feedforward=self.intermediate_size,
+                dropout=self.hidden_dropout_prob,
+                use_gating=self.use_gating,
+                init_alpha_xattn=self.init_alpha_xattn,
+                init_alpha_dense=self.init_alpha_dense,
+                batch_first=True
+            )
+ 
+        # Post-fusion normalization before classification
+        self.post_fusion_ln = nn.LayerNorm(self.hidden_size)
+        self.post_fusion_dropout = nn.Dropout(self.hidden_dropout_prob)
+ 
+        logger.info(
+            "CrossBert initialized: H=%d, heads=%d, num_tab_tokens=%d, cross_attention_intermediate_size=%d, hidden_dropout_prob=%f, hidden early=%s, late=%s",
+            self.hidden_size,
+            self.cross_attn_heads,
+            self.num_tab_tokens,
+            self.intermediate_size,
+            self.hidden_dropout_prob,
+            bool(self.cross_attn_early),
+            bool(self.cross_attn_late),
+        )
+
+        logger.info("Applying custom weight initialization to new modules.")
+        self.tabular_tokenizer.apply(self._init_weights)
+        if self.cross_attn_early:
+                self.cross_attn_early.apply(self._init_weights)
+        if self.cross_attn_late:
+                self.cross_attn_late.apply(self._init_weights)
+        self.post_fusion_ln.apply(self._init_weights)
+
+    def _check_tensor_finite(self, name, t):
+        if t is not None and not torch.isfinite(t).all():
+            raise RuntimeError(f"{name} contains NaN/Inf")
+
+    def _init_weights(self, module):
+        """Initializes the weights of the custom modules."""
+        if isinstance(module, nn.Linear):
+            nn.init.xavier_uniform_(module.weight)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.LayerNorm):
+            nn.init.ones_(module.weight)
+            nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.MultiheadAttention):
+            if module.in_proj_weight is not None:
+                nn.init.xavier_uniform_(module.in_proj_weight)
+            if module.out_proj.weight is not None:
+                nn.init.xavier_uniform_(module.out_proj.weight)
+            if module.in_proj_bias is not None:
+                nn.init.zeros_(module.in_proj_bias)
+        elif isinstance(module, GatedCrossAttentionBlock):
+            with torch.no_grad():
+                if hasattr(module, "alpha_xattn"):
+                    module.alpha_xattn.data.fill_(float(self.init_alpha_xattn))
+                    module.alpha_xattn.requires_grad_(True)
+                if hasattr(module, "alpha_dense"):
+                    module.alpha_dense.data.fill_(float(self.init_alpha_dense))
+                    module.alpha_dense.requires_grad_(True)
+ 
+    def forward(
+        self,
+        input_ids: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        token_type_ids: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.Tensor] = None,
+        head_mask: Optional[torch.Tensor] = None,
+        inputs_embeds: Optional[torch.Tensor] = None,
+        labels: Optional[torch.Tensor] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+        extra_data: Optional[torch.Tensor] = None,
+        tab_mask: Optional[torch.Tensor] = None,
+    ) -> SequenceClassifierOutput:
+        """Forward pass with Early/Late cross-attention around the BERT encoder.
+ 
+        Args:
+            input_ids: (B, T_text) token ids (mutually exclusive with inputs_embeds).
+            attention_mask: (B, T_text) text attention mask.
+            token_type_ids: (B, T_text) segment ids (optional).
+            position_ids: Optional positional ids.
+            head_mask: Optional head mask for BERT attention heads.
+            inputs_embeds: (B, T_text, H) precomputed input embeddings (exclusive with input_ids).
+            labels: Training labels for loss computation.
+            output_attentions: Return attentions from the BERT encoder.
+            output_hidden_states: Return hidden states from the BERT encoder.
+            return_dict: Return HF `SequenceClassifierOutput` (default: True).
+            extra_data: (B, F) tabular features to fuse. If None, model behaves like vanilla BERT head.
+            tab_mask: (B, T_tab) with 1=keep, 0=pad for tab tokens (optional).
+ 
+        Returns:
+            SequenceClassifierOutput with `loss` (if labels provided) and `logits`.
+        """
+        if return_dict is None:
+            return_dict = True
+ 
+        # Build tabular tokens if provided
+        tab_tokens = None
+        if extra_data is not None:
+            tab_tokens = self.tabular_tokenizer(extra_data)  # (B, T_tab, H)
+ 
+        # Compute input embeddings
+        if inputs_embeds is None:
+            embeddings = self.bert.embeddings(
+                input_ids=input_ids,
+                position_ids=position_ids,
+                token_type_ids=token_type_ids,
+                inputs_embeds=None,
+                past_key_values_length=0,
+            )  # (B, T_text, H)
+        else:
+            embeddings = inputs_embeds  # (B, T_text, H)
+ 
+        # Optional Early cross-attention on CLS (before encoder)
+        if (self.cross_attn_early is not None) and (tab_tokens is not None):
+            cls_early = embeddings[:, :1, :]  # (B, 1, H)
+            logger.debug("Applying EARLY cross-attention (pre-encoder)")
+
+            cls_early = self.cross_attn_early(cls_early, tab_tokens, tab_mask=tab_mask)  # (B, 1, H)
+            self._check_tensor_finite("cls_early", cls_early)
+            embeddings = torch.cat([cls_early, embeddings[:, 1:, :]], dim=1)  # (B, T_text, H)
+
+            self._check_tensor_finite("embeddings (pre-encoder)", embeddings)
+
+            if self.log_gates_mlflow and self.training:
+                gate_values = self.cross_attn_early.get_gate_values()
+                if gate_values is not None:
+                    mlflow.log_metric("gate_attn_tanh_early", value=gate_values["gate_attn_tanh"], step=self._gate_log_step)
+                    mlflow.log_metric("gate_ffn_tanh_early",  value=gate_values["gate_ffn_tanh"],  step=self._gate_log_step)
+ 
+        # BERT Encoder
+        encoder_outputs = self.bert.encoder(
+            hidden_states=embeddings,
+            attention_mask=self.bert.get_extended_attention_mask(attention_mask, attention_mask.shape, attention_mask.device) # type: ignore
+            if attention_mask is not None else None,
+            head_mask=head_mask,
+            encoder_hidden_states=None,
+            encoder_attention_mask=None,
+            past_key_values=None,
+            use_cache=False,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=True,
+        )
+ 
+        sequence_output = encoder_outputs.last_hidden_state  # (B, T_text, H)
+        cls_token = sequence_output[:, :1, :]  # (B, 1, H)
+
+        self._check_tensor_finite("sequence_output", sequence_output)
+        self._check_tensor_finite("cls_token (pre-late)", cls_token)
+ 
+        logger.debug(f"Stats CLS_Token: mean={cls_token.mean():.4f}, std={cls_token.std():.4f}, min={cls_token.min():.4f}, max={cls_token.max():.4f}")
+
+        # Optional Late cross-attention on CLS (after encoder)
+        if (self.cross_attn_late is not None) and (tab_tokens is not None):
+            cls_token = self.cross_attn_late(cls_token, tab_tokens, tab_mask=tab_mask)  # (B, 1, H)
+
+            self._check_tensor_finite("cls_token (post-late)", cls_token)
+
+            if self.log_gates_mlflow and self.training:
+                gate_values = self.cross_attn_late.get_gate_values()
+                if gate_values is not None:
+                    mlflow.log_metric("gate_attn_tanh_late", value=gate_values["gate_attn_tanh"], step=self._gate_log_step)
+                    mlflow.log_metric("gate_ffn_tanh_late",  gate_values["gate_ffn_tanh"],  step=self._gate_log_step)
+        
+        if self.log_gates_mlflow and self.training:
+            self._gate_log_step += 1
+
+        # Classification
+        fused_cls = self.post_fusion_dropout(self.post_fusion_ln(cls_token)).squeeze(1)  # (B, H)
+        logits = self.classifier(fused_cls)  # (B, num_labels)
+
+        self._check_tensor_finite("logits", logits)
+ 
+        return SequenceClassifierOutput(
+            logits=logits,
+            hidden_states=encoder_outputs.hidden_states if output_hidden_states else None,
+            attentions=encoder_outputs.attentions if output_attentions else None,
+        )

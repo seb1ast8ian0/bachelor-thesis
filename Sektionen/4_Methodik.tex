@@ -7,7 +7,7 @@
 Die Datengrundlage besteht aus einer Mischung aus produktiven Versicherungsdaten und öffentlichen Benchmarks. Alle Datensätze werden über eine einheitliche Pipeline in Tensoren überführt (inkl.\ Splitting, tabellarischer Vorverarbeitung und Text-Tokenisierung).
 
 \paragraph{Datenbasis}
-Der primäre Datensatz stammt aus einem deutschen Versicherungsunternehmen und wurde für die Identifikation von Regresspotenzialen kuratiert. Es handelt sich um ein Multi-Class-Setting mit den Zielklassen \textit{Kein Regress} (0), \textit{Regress} (1) und \textit{Versicherungsschutzentzug} (2). Er kombiniert unstrukturierte Schadenbeschreibungen mit tabellarischen Metadaten (Tabelle \ref{tab:sample_case} zeigt einen exemplarischen Datenpunkt). Für die Bewertung der Ergebnisse sind zwei Punkte wichtig: Die Labels liegen nur für historisch manuell geprüfte Fälle vor (\textit{Selection Bias}). Außerdem sind viele Fälle nicht gelabelt (\textit{Missing-Label-Problem}). Ungelabelte Fälle werden zunächst als Klasse 0 behandelt; die daraus entstehenden Unsicherheiten werden bei der Interpretation berücksichtigt.
+Der primäre Datensatz stammt aus einem deutschen Versicherungsunternehmen und wurde für die Identifikation von Regresspotenzialen aufbereitet. Es handelt sich um ein Multi-Class-Setting mit den Zielklassen \textit{Kein Regress} (0), \textit{Regress} (1) und \textit{Versicherungsschutzentzug} (2). Er kombiniert unstrukturierte Schadenbeschreibungen mit tabellarischen Merkmalen zum Schadenfall (Tabelle \ref{tab:sample_case} zeigt einen exemplarischen Datenpunkt). Die Daten bergen jedoch eine Problematik: Es wurde historisch nur ein Teil der Fälle für eine ausführliche Regressprüfung ausgewählt, was zu einem \textit{Selection Bias} in den Labels führt. Die nicht geprüften Daten enthalten wahrscheinlich noch unerkannte Regressfälle, auch wenn davon ausgegangen wird, dass dieses Potenzial gering ist (\textit{Missing-Label-Problem}). Ungelabelte Fälle werden daher als Klasse 0 behandelt. Diese Problematiken (Bias und Missing Labels) sind nicht der Hauptfokus dieser Arbeit, werden aber der Vollständigkeit halber erwähnt, um die Eigenschaften des primären Datensatzes transparent zu machen.
 
 \begin{table}[ht]
     \centering
@@ -28,8 +28,8 @@ Der primäre Datensatz stammt aus einem deutschen Versicherungsunternehmen und w
 
 Zur externen Validierung werden zwei Kaggle-Benchmarks genutzt:
 \begin{enumerate}
-    \item \textbf{Women's E-Commerce Clothing Reviews} \cite{KaggleEcommerce}: Binäre Sentiment-Klassifikation mit Text und Metadaten.
-    \item \textbf{PetFinder.my Adoption Prediction} \cite{KagglePetfinder}: Multi-Class-Klassifikation mit Beschreibungen und Metadaten.
+    \item \textbf{Women's E-Commerce Clothing Reviews} \cite{KaggleEcommerce}: Binäre Sentiment-Klassifikation mit Text und Metadaten (23.486 Samples gesamt; 21.137 Training, 2.349 Validierung).
+    \item \textbf{PetFinder.my Adoption Prediction} \cite{KagglePetfinder}: Multi-Class-Klassifikation mit Beschreibungen und Metadaten (14.993 Samples gesamt; 13.494 Training, 1.499 Validierung).
 \end{enumerate}
 Damit wird die Übertragbarkeit der Architektur außerhalb der Versicherungsdomäne überprüft.
 
@@ -45,42 +45,41 @@ Die Vorverarbeitung trennt strikt Trainings-, Validierungs- und Testdaten, um Da
 \subsection{Baseline-Modelle}
 \label{sec:baselines}
 
-Um den Mehrwert der entwickelten CrossBERT-Architektur gegenüber bestehenden multimodalen Modellen einordnen zu können, erfolgt ein Vergleich mit zwei bestehenden multimodalen Modellen für die Fusion von tabellarischen Daten und Textdaten: SumBERT (Early Fusion) und ConcatBERT (Late Fusion). Der vollständige Quellcode beider Implementierungen befindet sich in Anhang \ref{app:source_code_baselines}.
+Um den Mehrwert der entwickelten CrossBERT-Architektur gegenüber bestehenden multimodalen Modellen einordnen zu können, erfolgt ein Vergleich mit zwei bestehenden multimodalen Modellen für die Fusion von tabellarischen Daten und Textdaten: SumBERT (Early Fusion) und ConcatBERT (Late Fusion). Die Konzepte, der Quellcode sowie die Architekturgrafiken (Abbildungen \ref{fig:sumbert} und \ref{fig:concatbert}) dieser Modelle entstammen Vorarbeiten, die im Rahmen eines Praktikums bei der Firma QuantCo durchgeführt wurden \cite{Fuest2024Internship}. Der vollständige Quellcode beider Implementierungen befindet sich in Anhang \ref{app:source_code_baselines}.
 
 \subsubsection{SumBERT (Early Fusion)}
-SumBERT führt die Tabelleninformation bereits vor dem Encoder in das Modell ein. Die normalisierten und kodierten Tabellendaten werden zunächst per linearer Projektion (\texttt{nn.Linear}) in den Vektorraum des Sprachmodells projiziert ($H=768$). Dieser Vektor wird dann zum Embedding des \texttt{[CLS]}-Tokens addiert, bevor die Sequenz den ersten Transformer-Layer durchläuft (siehe Abbildung \ref{fig:sumbert}).
+SumBERT führt die Tabelleninformation bereits vor dem Encoder in das Modell ein. Die vorverarbeiteten Tabellendaten, repräsentiert als Merkmalsvektor $\mathbf{x}_{\text{tab}} \in \mathbb{R}^F$, werden zunächst per linearer Projektion (realisiert durch ein \gls{mlp}) in den Vektorraum des Sprachmodells projiziert. Die Dimension der Projektion entspricht der Hidden-Size des Modells ($H=768$). Dieser projizierte Vektor wird anschließend elementweise zum Embedding des \texttt{[CLS]}-Tokens addiert, bevor die Sequenz den ersten Transformer-Layer durchläuft (siehe Abbildung \ref{fig:sumbert}).
 
 \begin{figure}[h]
     \centering
     \includegraphics[width=0.9\textwidth]{Bilder/SumBERT_Modellarchitektur.png}
-    \caption{Architektur von SumBERT: Addition der Tabellen-Repräsentation zum CLS-Token-Embedding vor dem Encoder.}
+    \caption{Architektur von SumBERT: Addition der Tabellen-Repräsentation zum CLS-Token-Embedding vor dem Encoder. Quelle: \protect\cite{Fuest2024Internship}.}
     \label{fig:sumbert}
 \end{figure}
 
-Formal lässt sich die Berechnung des fusionierten Eingabevektors wie folgt beschreiben:
+Formal lässt sich die Berechnung des fusionierten Eingabevektors $\mathbf{e}_{\text{fused}}^{\text{[CLS]}}$ wie folgt beschreiben:
 \begin{equation}
-    E_{\text{fused}}^{[CLS]} = E_{\text{text}}^{[CLS]} + \text{\gls{mlp}}_{\text{tab}}(X_{\text{tab}})
+    \mathbf{e}_{\text{fused}}^{\text{[CLS]}} = \mathbf{e}_{\text{text}}^{\text{[CLS]}} + \text{MLP}_{\text{tab}}(\mathbf{x}_{\text{tab}})
 \end{equation}
 
-Dadurch trägt das \texttt{[CLS]}-Token sowohl Text- als auch Tabelleninformation und gibt sie über die Self-Attention im Encoder an die weiteren Schichten weiter.
+Hierbei bezeichnet $\mathbf{e}_{\text{text}}^{\text{[CLS]}} \in \mathbb{R}^H$ das ursprüngliche Embedding des \texttt{[CLS]}-Tokens (Eingabe-Ebene) und $\mathbf{x}_{\text{tab}}$ den Vektor der tabellarischen Features. Durch diese Addition trägt das \texttt{[CLS]}-Token von Beginn an sowohl Text- als auch Tabelleninformationen und gibt diese über die Self-Attention im Encoder an tiefere Schichten weiter.
 
-\newpage
 \subsubsection{ConcatBERT (Late Fusion)}
-Im Gegensatz dazu nutzt ConcatBERT eine späte Fusion. Text- und Tabellendaten werden hierbei zunächst separat verarbeitet. Der Text durchläuft den vollständigen BERT-Encoder, um eine kontextualisierte Repräsentation des \texttt{[CLS]}-Tokens zu generieren. Erst im Anschluss an den Encoding-Prozess wird dieser Vektor mit den rohen bzw.\ leicht vorverarbeiteten Tabellen-Features konkateniert (siehe Abbildung \ref{fig:concatbert}).
+Im Gegensatz dazu nutzt ConcatBERT eine späte Fusion (Late Fusion). Text- und Tabellendaten werden hierbei zunächst separat verarbeitet. Der Text durchläuft den vollständigen \gls{bert}-Encoder, um eine kontextualisierte Repräsentation des \texttt{[CLS]}-Tokens zu generieren, die im Folgenden als $\mathbf{h}_{\text{text}}^{\text{[CLS]}}$ bezeichnet wird. Wir verwenden hier $\mathbf{h}$ (statt $\mathbf{e}$), um zu kennzeichnen, dass es sich um einen Hidden State der Ausgabe-Ebene handelt. Erst im Anschluss an den Encoding-Prozess wird dieser Vektor mit den vorverarbeiteten Tabellen-Features $\mathbf{x}_{\text{tab}}$ konkateniert (siehe Abbildung \ref{fig:concatbert}).
 
 \begin{figure}[h]
     \centering
     \includegraphics[width=0.9\textwidth]{Bilder/ConcatBERT_Modellarchitektur.png}
-    \caption{Architektur von ConcatBERT: Konkatenation der Tabellen-Features mit dem Output des BERT-Encoders.}
+    \caption{Architektur von ConcatBERT: Konkatenation der Tabellen-Features mit dem Output des BERT-Encoders. Quelle: \protect\cite{Fuest2024Internship}.}
     \label{fig:concatbert}
 \end{figure}
 
-Der resultierende Vektor dient als Eingabe für den Klassifikations-Head:
+Der resultierende Vektor $\mathbf{h}_{\text{fusion}}$ dient als Eingabe für den Klassifikations-Head:
 \begin{equation}
-    h_{\text{fusion}} = [ \text{BERT}(E_{\text{text}})_{[CLS]} \parallel X_{\text{tab}} ]
+    \mathbf{h}_{\text{fusion}} = [ \mathbf{h}_{\text{text}}^{\text{[CLS]}} \parallel \mathbf{x}_{\text{tab}} ]
 \end{equation}
 
-Diese Architektur ist rechnerisch effizient und leicht zu implementieren, führt aber dazu, dass die Tabellendaten den Self-Attention-Mechanismus des Transformers nicht nutzen.
+Diese Architektur ist rechnerisch effizient und leicht zu implementieren, führt aber dazu, dass die Tabellendaten nicht mit dem Self-Attention-Mechanismus des Transformers interagieren können.
 
 \newpage
 \subsection{CrossBERT-Architektur}
@@ -89,7 +88,8 @@ Diese Architektur ist rechnerisch effizient und leicht zu implementieren, führt
 Die CrossBERT-Architektur erweitert einen \gls{bert}-Klassifikator um Cross-Attention zwischen Text und Tabellendaten. Anders als bei SumBERT und ConcatBERT (Abschnitt \ref{sec:baselines}) werden Tabellendaten nicht nur als statischer Zusatzvektor verwendet, sondern als kurze Token-Sequenz in den Hidden-Space von \gls{bert} projiziert, die der Text über Cross-Attention auslesen kann (vgl.\ Abschnitt \ref{sec:transformer_attention}). Der vollständige Quellcode ist in Anhang \ref{app:source_code_crossbert} dokumentiert.
 
 \subsubsection{Architekturüberblick}
-Abbildung \ref{fig:crossbert_architecture} zeigt den Gesamtaufbau. Text wird mit \texttt{deepset/gbert-base} in Embeddings überführt und durch den Encoder kontextualisiert ($H=768$). Tabellarische Features werden parallel durch einen \textit{TabularTokenizer} in $N$ Tab Tokens kodiert. Optional werden ein oder zwei Cross-Attention-Blöcke eingesetzt, die ausschließlich den \texttt{[CLS]}-Token mit Tab Tokens fusionieren: (i) \textit{early} vor dem Encoder (Eingangs-Embeddings) und/oder (ii) \textit{late} nach dem Encoder (finaler \texttt{[CLS]}-State). Der Klassifikationskopf arbeitet anschließend auf dem fusionierten \texttt{[CLS]}-Vektor.
+Abbildung \ref{fig:crossbert_architecture} zeigt den Gesamtaufbau. Text wird mit \texttt{deepset/gbert-base} in eine Sequenz von Embeddings überführt und durch den Encoder verarbeitet. Die Dimension der Hidden-States beträgt dabei $H=768$. Parallel dazu werden die tabellarischen Features durch einen \textit{TabularTokenizer} in eine Sequenz von $N$ Vektoren, die sogenannten \textit{Tab Tokens}, kodiert.
+Kern der Architektur ist die Fusion über Cross-Attention-Blöcke. Diese verknüpfen gezielt das \texttt{[CLS]}-Token des Textes mit der Sequenz der Tab Tokens. Dies kann an zwei Stellen erfolgen: (i) \textit{Early Fusion} direkt auf den Eingangs-Embeddings vor dem Encoder oder (ii) \textit{Late Fusion} auf dem finalen Status nach dem Encoder. Der Klassifikationskopf (Classification Head) arbeitet anschließend auf dem fusionierten \texttt{[CLS]}-Vektor.
 
 \begin{figure}[h]
     \centering
@@ -99,18 +99,30 @@ Abbildung \ref{fig:crossbert_architecture} zeigt den Gesamtaufbau. Text wird mit
 \end{figure}
 
 \subsubsection{TabularTokenizer}
-Die tabellarische Eingabe liegt nach der Vorverarbeitung als Vektor $X_{\text{tab}} \in \mathbb{R}^{B \times F}$ vor (normalisierte numerische Variablen und One-Hot-kodierte kategoriale Merkmale). Analog zur in Abschnitt \ref{sec:tab_representation} beschriebenen globalen Projektion werden daraus $N$ latente Tokens $E_{\text{tab}} \in \mathbb{R}^{B \times N \times H}$ erzeugt (Abbildung \ref{fig:tabular_tokenizer}):
+Die tabellarische Eingabe liegt nach der Vorverarbeitung für einen Batch der Größe $B$ als Matrix $\mathbf{X}_{\text{tab}} \in \mathbb{R}^{B \times F}$ vor, wobei $F$ die Anzahl der Features (normalisierte numerische und One-Hot-kodierte kategoriale Variablen) bezeichnet. 
+
+Analog zur in Abschnitt \ref{sec:tab_representation} beschriebenen globalen Projektion werden aus diesen Features $N$ latente Tokens generiert. Das Ergebnis ist ein Tensor $\mathbf{E}_{\text{tab}} \in \mathbb{R}^{B \times N \times H}$, der eine Sequenz von $N$ Vektoren der Dimension $H$ darstellt (siehe Abbildung \ref{fig:tabular_tokenizer}):
 \begin{equation}
-    E_{\text{tab}} = [\mathbf{e}_1,\dots,\mathbf{e}_N], \quad \mathbf{e}_i \in \mathbb{R}^{B \times H}
+    \mathbf{e}_i = \text{MLP}_i(\mathbf{X}_{\text{tab}}) \quad \text{für } i = 1, \dots, N
 \end{equation}
-Praktisch wird dies durch $N$ gelernte parallele \glspl{mlp}-Projektionsköpfe realisiert, die denselben Feature-Vektor in unterschiedliche Teilrepräsentationen abbilden. Die $N$ Projektionsköpfe erzeugen damit $N$ verschiedene „Ansichten“ auf dieselbe Tabellenzeile. Die Tokenanzahl $N$ ist ein Hyperparameter (\texttt{num\_\allowbreak tab\_\allowbreak token}); ein kleiner Wert hält die zusätzliche Sequenz kurz und damit die Cross-Attention rechnerisch günstig. Wie bei globalen Projektionen üblich, ist die Spaltenreihenfolge in der Pipeline fest vorgegeben und muss in Training und Inferenz identisch sein.
+Die Gesamtsequenz ergibt sich durch Konkatenation der einzelnen Projektionen:
+\begin{equation}
+    \mathbf{E}_{\text{tab}} = [\mathbf{e}_1, \dots, \mathbf{e}_N]
+\end{equation}
+Technisch wird dies durch $N$ parallele, lernbare \gls{mlp}-Projektionsköpfe realisiert. Jeder Kopf bildet den gesamten Feature-Vektor $\mathbf{X}_{\text{tab}}$ auf einen eigenen Token-Vektor $\mathbf{e}_i$ ab. Die $N$ Projektionsköpfe erzeugen somit $N$ unterschiedliche, gelernte „Ansichten“ auf dieselbe Tabellenzeile.
+
+Diese globale Projektion entkoppelt die Sequenzlänge von der Eingabedimension $F$, die durch One-Hot-Encoding stark anwächst. Während eine direkte Tokenisierung aller Spalten oder eine Gruppierung nach Originalfeatures (wie beim später vorgestellten \textit{TabTokenizer V2}) zu variablen Sequenzlängen führt, garantiert die fixe Anzahl $N$ (Hyperparameter \texttt{num\_\allowbreak tab\_\allowbreak token}) eine konstante Recheneffizienz. Dies zwingt das Modell, die relevantesten Informationen der hochdimensionalen Tabellendaten in eine kompakte latente Repräsentation zu komprimieren.
 
 \subsubsection{Cross-Attention-Block}
-Die Fusion erfolgt über Cross-Attention, bei der der \texttt{[CLS]}-Token als Query dient und Tab Tokens als Keys/Values (vgl. Abschnitt \ref{sec:transformer_attention}). Für $\mathbf{c} \in \mathbb{R}^{B \times 1 \times H}$ gilt:
+Die Fusion der Modalitäten erfolgt über einen Cross-Attention-Mechanismus (siehe Abschnitt \ref{sec:transformer_attention}), der gezielt in den Datenfluss des Transformers integriert ist. Wie in Abbildung \ref{fig:crossbert_architecture} dargestellt, beginnt der Prozess mit der \textbf{CLS Extraction}, bei der das \texttt{[CLS]}-Token aus der aktuellen Sequenz (entweder Embedding oder Hidden State) herausgelöst wird. Dieses extrahierte Token fungiert als \textit{Query}, während die erzeugten Tab Tokens als \textit{Keys} und \textit{Values} dienen. Nach der Anreicherung durch die Attention-Operation wird das aktualisierte Token mittels \textbf{CLS Replacement} an seine ursprüngliche Position in die Sequenz zurückgeschrieben, um den weiteren Fluss im Modell zu durchlaufen.
+
+Sei $\mathbf{c} \in \mathbb{R}^{B \times 1 \times H}$ der Vektor des \texttt{[CLS]}-Tokens (abhängig von der Position der Fusion entweder das initiale Embedding oder der Encoder-Output) und $\mathbf{E}_{\text{tab}} \in \mathbb{R}^{B \times N \times H}$ die Sequenz der Tab Tokens. Die Projektionen für den Attention-Mechanismus berechnen sich wie folgt:
 \begin{equation}
-    Q = \mathbf{c} W_Q,\quad K = E_{\text{tab}} W_K,\quad V = E_{\text{tab}} W_V
+    \mathbf{Q} = \mathbf{c} \mathbf{W}_Q,\quad \mathbf{K} = \mathbf{E}_{\text{tab}} \mathbf{W}_K,\quad \mathbf{V} = \mathbf{E}_{\text{tab}} \mathbf{W}_V
 \end{equation}
-Die resultierenden Attention-Gewichte steuern, welche Teile der Tabulardaten für die aktuelle Texteingabe relevant sind. Dadurch wird die \texttt{[CLS]}-Repräsentation nach der Attention um tabellarischen Kontext angereichert. CrossBERT verwendet Multi-Head Attention und ergänzt diese um Residualpfade sowie ein Feed-Forward-Netzwerk (Abbildung \ref{fig:cross_attention_block}). Optional kann eine Tab-Maske genutzt werden, um einzelne Tab Tokens in der Attention auszublenden.
+Hierbei sind $\mathbf{W}_Q, \mathbf{W}_K, \mathbf{W}_V \in \mathbb{R}^{H \times H}$ die lernbaren Gewichtsmatrizen. Über die Attention-Gewichte lernt das Modell dynamisch, welche Informationen aus den Tabellendaten für die Interpretation des aktuellen Textes relevant sind. Die \texttt{[CLS]}-Repräsentation wird so kontextabhängig um tabellarische Informationen angereichert.
+
+Die CrossBERT-Implementierung nutzt Multi-Head Attention und ergänzt diese um Residualpfade sowie ein Feed-Forward-Netzwerk (Abbildung \ref{fig:cross_attention_block}). Optional kann eine Tab-Maske genutzt werden, um einzelne Tab Tokens in der Attention auszublenden.
 
 \begin{figure}[H]
     \centering
@@ -133,6 +145,7 @@ Die resultierenden Attention-Gewichte steuern, welche Teile der Tabulardaten fü
     \label{fig:crossbert_components}
 \end{figure}
 
+\newpage
 \subsubsection{Fusionsvarianten: Early, Late und Hybrid}
 Die Position des Cross-Attention-Blocks legt fest, ob die Fusion früh (vor dem Encoder), spät (nach dem Encoder) oder an beiden Stellen erfolgt:
 \begin{itemize}
@@ -141,19 +154,16 @@ Die Position des Cross-Attention-Blocks legt fest, ob die Fusion früh (vor dem 
     \item \textbf{Hybrid Fusion:} Early und Late Fusion werden kombiniert, um sowohl die Encoder-Features als auch die finale Entscheidungsschicht mit Tabellensignalen zu versorgen.
 \end{itemize}
 
-Falls keine tabellarischen Features vorliegen oder Cross-Attention deaktiviert ist, verhält sich CrossBERT identisch zu einem unimodalen \gls{bert}-Klassifikator und bleibt damit direkt vergleichbar.
-
-\newpage
 \subsection{Trainings-Setup und Evaluationsmetriken}
 \label{sec:training_setup}
 
 Damit die Modelle vergleichbar sind, werden alle Experimente mit einer gemeinsamen Pipeline und einer zentralen Konfiguration durchgeführt. Baselines und CrossBERT teilen sich dabei dieselben Trainingsparameter; sie unterscheiden sich nur in der Art der multimodalen Fusion (vgl.\ Abschnitt \ref{sec:crossbert_architecture}).
 
 \paragraph{Modell und Lernstrategie.}
-Als Textencoder wird \texttt{deepset/\allowbreak gbert-base} verwendet \allowbreak\cite{Chan2020GBERT}. GBERT ist ein vortrainiertes deutsches Sprachmodell auf Basis von BERT \cite{Devlin2019} und dient als Initialisierung für das end-to-end Fine-Tuning im jeweiligen Klassifikations-Setup. Die Klassifikation erfolgt überwacht mit Cross-Entropy-Loss. Die Architekturvariante (Baseline vs.\ CrossBERT) beeinflusst dabei ausschließlich die Art der multimodalen Fusion (vgl.\ Abschnitt \ref{sec:crossbert_architecture}).
+Als Textencoder wird \texttt{deepset/\allowbreak gbert-base} verwendet \allowbreak\cite{Chan2020GBERT}. GBERT ist ein vortrainiertes deutsches Sprachmodell auf Basis von BERT \cite{Devlin2019} und dient als Initialisierung für das end-to-end Fine-Tuning im jeweiligen Klassifikations-Setup. Als Verlustfunktion für das Training dient Cross-Entropy-Loss.
 
 \paragraph{Optimierung und Trainingsprotokoll.}
-Die zentralen Trainingshyperparameter sind in Tabelle \ref{tab:training_hparams} zusammengefasst. Zur Stabilisierung des Fine-Tunings wird eine Lernratenstrategie aus linearem Warmup und anschließendem Cosine Scheduling eingesetzt. Das Early Stopping überwacht \texttt{val/average\_\allowbreak precision}. Die Validierung wird in festen Intervallen innerhalb einer Epoche ausgeführt (\texttt{val\_\allowbreak check\_\allowbreak interval}=500). 
+Die zentralen Trainingshyperparameter sind in Tabelle \ref{tab:training_hparams} zusammengefasst. Zur Stabilisierung des Fine-Tunings wird eine Lernratenstrategie aus linearem Warmup und anschließendem Cosine Scheduling eingesetzt. Das Early Stopping überwacht \texttt{val/average\_\allowbreak precision}. Die Validierung wird in festen Intervallen innerhalb einer Epoche ausgeführt (\texttt{val\_\allowbreak check\_\allowbreak interval}=500), sodass alle 500 Batches geprüft wird, ob das Early Stopping greifen soll. 
 Für die \emph{Gating}-Ablation nach Flamingo (\cite{Alayrac2022}, siehe Abschnitt \ref{sec:ablations}) werden zusätzlich (i) der \gls{bert}-Encoder in den ersten zwei Epochen eingefroren (\texttt{freeze\_bert\_epochs}=2), (ii) die Gating-Parameter (\texttt{alpha\_}) mit einer fünffach erhöhten Lernrate ohne Weight Decay trainiert (\texttt{lr\_alpha\_multiplier}=5{,}0) und (iii) die Epocheanzahl auf 2--6 begrenzt.
 
 \begin{table}[H]
@@ -165,7 +175,6 @@ Für die \emph{Gating}-Ablation nach Flamingo (\cite{Alayrac2022}, siehe Abschni
         \hline
         \textbf{Parameter} & \textbf{Wert} \\
         \hline
-        Seed & 777 \\
         Optimizer & AdamW \\
         Lernrate & $1\cdot 10^{-5}$ \\
         LR-Scheduler & Linear Warmup (0{,}1) + Cosine \\
@@ -181,7 +190,7 @@ Für die \emph{Gating}-Ablation nach Flamingo (\cite{Alayrac2022}, siehe Abschni
 Die Validierung erfolgt auf einem festen Train/Val/Test-Split (vgl.\ Abschnitt \ref{sec:data_basis}). Alle Experimente laufen auf einer NVIDIA Tesla V100 (32\,GB). Mixed Precision reduziert dabei Rechenzeit und Speicherbedarf.
 
 \paragraph{Evaluationsmetriken.}
-Als Hauptkennzahlen werden \Gls{ap} und die Fläche unter der ROC-Kurve (\Gls{aucroc}) berichtet. \Gls{ap} ist bei unausgeglichenen Klassen hilfreich, da sie die gesamte Precision-Recall-Kurve berücksichtigt. \Gls{aucroc} misst, wie gut das Modell positive gegenüber negativen Beispielen trennt, unabhängig von einem festen Schwellenwert. In Multi-Class-Settings werden beide Kennzahlen one-vs-rest pro Klasse berechnet. Zusätzlich werden die Klassen binarisiert (positiv vs.\ Klasse 0), um eine konsistente Vergleichbarkeit über Datensätze hinweg zu gewährleisten. 
+Als Hauptkennzahlen werden \Gls{ap} und die \Gls{aucroc} genutzt. \Gls{ap} ist bei unausgeglichenen Klassen hilfreich, da sie die gesamte Precision-Recall-Kurve berücksichtigt. \Gls{aucroc} misst, wie gut das Modell positive gegenüber negativen Beispielen trennt, unabhängig von einem festen Schwellenwert. In Multi-Class-Settings werden beide Kennzahlen one-vs-rest pro Klasse berechnet. Zusätzlich werden die Klassen binarisiert (positiv vs.\ Klasse 0), um eine konsistente Vergleichbarkeit über Datensätze hinweg zu gewährleisten. 
 Zur Beurteilung der Modelleffizienz werden zudem bei jedem Experiment die Anzahl der trainierbaren Parameter und die \Gls{flops} protokolliert.
 
 
@@ -201,8 +210,12 @@ Um den Einfluss einzelner Architektur-Entscheidungen systematisch zu verstehen, 
 Cross-Attention & Position: Early / Late / Hybrid & Einfluss des Fusionsorts (vor/nach Encoder vs.\ kombiniert) \\ \hline
 Tab Tokens & $n_{\text{tab}}$ (Hybrid): 0 / 1 / 2 / 4 / 8 / 16 & Quantitativ prüfen, wie stark $n_{\text{tab}}$ die Leistung von CrossBERT (Hybrid) beeinflusst \\ \hline
 Gating Layer & Flamingo-style \cite{Alayrac2022}: Mit / Ohne & Adaptive Gewichtung Text$\leftrightarrow$Tab für stabilere Scores und ökonomische Kennzahlen \\ \hline
-Tokenizer & TabTokenizer: V1 /\ V2 (per-Feature-Tokenisierung) & Prüfen, ob feinere Tokenisierung Fusion und Interpretierbarkeit verbessert \\ \hline
+Tokenizer & TabTokenizer: V1 /\ V2 (per-Feature-Tokenisierung) & Prüfen, ob Tokenisierung pro Feature die Fusion und Interpretierbarkeit verbessert \\ \hline
 \end{tabular}
 \end{table}
 
-Im Fokus stehen (i) die Positionierung der Cross-Attention (Early/Late/Hybrid), (ii) die Sensitivität gegenüber der Anzahl der Tab Tokens $n_{\text{tab}}$ im Hybrid-Setup, (iii) ein Gating-Mechanismus nach Flamingo zur stabileren Fusion sowie (iv) ein \textit{TabTokenizer V2} mit per-Feature-Tokenisierung zur potenziell besseren Interpretierbarkeit. Für die \emph{Gating}-Ablation wurden die im Flamingo-Ansatz beschriebenen trainingsseitigen Anpassungen gezielt übernommen (Encoder-Freezing und erhöhte Lernrate für die Gate-Parameter; vgl.\ Abschnitt \ref{sec:training_setup}), weil die zusätzlichen Gates ohne diese Anpassungen in ersten Tests zu instabilem Verhalten geführt haben.
+Im Fokus stehen (i) die Positionierung der Cross-Attention (Early/Late/Hybrid) und (ii) die Sensitivität gegenüber der Anzahl der Tab Tokens $n_{\text{tab}}$ im Hybrid-Setup. Darüber hinaus werden zwei methodische Erweiterungen untersucht:
+
+\paragraph{Gated Cross-Attention.} Zur Stabilisierung der Fusion wird ein Gating-Mechanismus nach dem Vorbild von Flamingo \cite{Alayrac2022} eingeführt. Hierbei wird der Output der Cross-Attention-Schicht nicht direkt addiert, sondern durch einen lernbaren Skalar $\tanh(\alpha)$ gewichtet: $\mathbf{y} = \mathbf{x} + \tanh(\alpha) \cdot \text{Attention}(\mathbf{x}, \mathbf{E}_{\text{tab}})$. Da $\alpha$ mit $0$ initialisiert wird, startet das Modell als reiner Text-Klassifikator und lernt schrittweise, tabellarische Informationen hinzuzufügen. Für diese Ablation wurden die im Flamingo-Ansatz beschriebenen trainingsseitigen Anpassungen übernommen (Encoder-Freezing und erhöhte Lernrate für die Gate-Parameter; vgl.\ Abschnitt \ref{sec:training_setup}), um die Stabilität zu gewährleisten.
+
+\paragraph{TabTokenizer V2 (Per-Feature-Tokenisierung).} Während der Standard-Tokenizer die gesamte Tabellenzeile global auf $N$ latente Tokens projiziert, ordnet der \textit{TabTokenizer V2} jedem semantischen Feature (z.\,B. einer numerischen Variable oder einer Gruppe von One-Hot-kodierten Spalten) genau ein eigenes Token zu. Entscheidend ist hierbei, dass über eine \textit{Feature Map} zusammengehörige One-Hot-Spalten aggregiert werden, sodass die Anzahl der erzeugten Tokens exakt der Anzahl der ursprünglichen Features im Rohdatensatz entspricht (und nicht der Dimension der expandierten Matrix $\mathbf{X}_{\text{tab}}$). Jedes Feature erhält dazu einen eigenen, separaten MLP-Projektionskopf. Dies erhöht die Interpretierbarkeit, da jedes Element der Token-Sequenz direkt auf ein spezifisches Eingabefeature zurückzuführen ist.

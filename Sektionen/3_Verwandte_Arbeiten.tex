@@ -21,7 +21,7 @@ Arbeiten wie das \textbf{Multimodal-Toolkit} \cite{Gu2021} und Bonnier et al. \c
 
 \paragraph{Industrieller Benchmark: CrossFitter Stacking}
 \label{sec:crossfitter}
-Im Unternehmenskontext dieser Arbeit dient die interne Modellarchitektur „CrossFitter“ als ebenfalls relevante Baseline. Im Gegensatz zu den zuvor beschriebenen End-to-End-Architekturen handelt es sich um einen zweistufigen Stacking-Ansatz, der die Stärken spezialisierter Modelle kombiniert, ohne dass diese in einem gemeinsamen, durchgängig trainierbaren Modell vereint sind. Abbildung \ref{fig:crossfitter_architecture} im Anhang \ref{sec:anhang} zeigt den schematischen Aufbau der CrossFitter-Modellarchitektur. In den Experimenten dieser Arbeit wird CrossFitter jedoch nicht als direkte Vergleichsbaseline genutzt, da der produktive Stacking-Ansatz einem anderen Modellierungsprinzip folgt als die untersuchten End-to-End-Transformer-Modelle und die zugrunde liegende Pipeline nicht vollständig reproduzierbar ist.
+Im Unternehmenskontext dieser Arbeit dient die interne Modellarchitektur „CrossFitter“ als ebenfalls relevante Baseline. Diese Architektur wurde im Rahmen eines Praktikums bei der Firma QuantCo entwickelt und in einer internen Präsentation vorgestellt \cite{Fuest2024Internship}. Im Gegensatz zu den zuvor beschriebenen End-to-End-Architekturen handelt es sich um einen zweistufigen Stacking-Ansatz, der die Stärken spezialisierter Modelle kombiniert, ohne dass diese in einem gemeinsamen, durchgängig trainierbaren Modell vereint sind. Abbildung \ref{fig:crossfitter_architecture} im Anhang \ref{sec:anhang} zeigt den schematischen Aufbau der CrossFitter-Modellarchitektur, basierend auf der internen Dokumentation \cite{Fuest2024Internship}. In den Experimenten dieser Arbeit wird CrossFitter jedoch nicht als direkte Vergleichsbaseline genutzt, da der produktive Stacking-Ansatz einem anderen Modellierungsprinzip folgt als die untersuchten End-to-End-Transformer-Modelle und die zugrunde liegende Pipeline nicht vollständig reproduzierbar ist.
 
 Das Verfahren nutzt ein \textbf{2-Fold-Cross-Prediction-Schema}, um Textinformationen für ein tabellarisches Modell nutzbar zu machen:
 \begin{enumerate}
@@ -31,7 +31,6 @@ Das Verfahren nutzt ein \textbf{2-Fold-Cross-Prediction-Schema}, um Textinformat
 \end{enumerate}
 Die so gewonnenen Wahrscheinlichkeitswerte des Textmodells werden als zusätzliches Feature zusammen mit den ursprünglichen strukturierten Merkmalen in eine \Gls{lgbm} eingespeist. In der Praxis ist dieser Ansatz robust und leistungsfähig. Aus theoretischer Sicht bleibt jedoch eine Einschränkung bestehen, da die Modalitäten während des Trainings nicht direkt miteinander interagieren. Das Textmodell erhält keinen Rückfluss aus den Tabellendaten und kann seine Repräsentationen daher nicht an den Kontext der strukturierten Attribute anpassen.
 
-\newpage
 \subsection{Forschungslücke und Einordnung}
 In den betrachteten Arbeiten zeigt sich ein deutliches Bild:
 \begin{itemize}

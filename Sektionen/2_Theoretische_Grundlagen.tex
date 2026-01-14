@@ -64,7 +64,7 @@ Hinsichtlich der Struktur der erzeugten Sequenz lassen sich zwei Hauptstrategien
 
 Der erste Ansatz, bekannt als \textbf{Feature Tokenization} (oder Column-wise Embeddings), bildet jedes Feature der Ursprungstabelle isoliert auf genau einen Token-Vektor ab. Dies wird beispielsweise im \textit{TabTransformer} \cite{Huang2020} oder im \textit{SAINT}-Modell \cite{Somepalli2021} angewendet. Die Sequenzlänge $N$ entspricht hierbei exakt der Anzahl der Spalten. Der Vorteil liegt in der Erhaltung der feingranularen Information jedes einzelnen Features.
 
-Der zweite Ansatz, der in dieser Arbeit auch Anwendung findet, verfolgt eine \textbf{globale Projektion} (Row-level Tokenization). Hierbei werden alle Features einer Zeile zunächst konkateniert und gemeinsam durch ein \gls{mlp} geleitet, um eine Sequenz von latenten Tokens zu erzeugen, die nicht mehr zwangsläufig 1-zu-1 den ursprünglichen Spalten entsprechen \cite{Gu2021}. Dies ermöglicht eine Entkopplung der Sequenzlänge von der Anzahl der Eingabefeatures und kann die Rechenkomplexität in der nachfolgenden Attention-Schicht reduzieren. Entscheidend ist hierbei, dass das Modell bereits in der Tokenisierungs-Phase globale Zusammenhänge zwischen den Features aggregieren kann, anstatt sie isoliert zu betrachten.
+Der zweite Ansatz, der in dieser Arbeit verfolgt wird, basiert auf einer **globalen Projektion** (Row-level Tokenization). Anstatt jedes Feature einzeln zu tokenisieren, werden hierbei alle Merkmale einer Tabellenzeile zunächst konkateniert und durch ein \gls{mlp} in eine latente Repräsentation überführt \cite{Gu2021, Borisov2024}. Diese Repräsentation besteht aus einer fixen Anzahl an Vektoren, wodurch die Sequenzlänge des Transformers von der Anzahl der Eingabefeatures entkoppelt wird. Ein wesentlicher Vorteil dieses Verfahrens ist, dass Zusammenhänge zwischen den Features bereits in der Projektionsphase erfasst werden können und die Rechenkomplexität der Attention-Schicht kontrollierbar bleibt.
 
 Unabhängig von der gewählten Methode entsteht am Ende eine Sequenz dichter Vektoren. Erst dadurch können Transformer-Modelle die Tabellendaten mit denselben Operationen verarbeiten wie Text und sie anschließend über Mechanismen wie Cross-Attention mit Textrepräsentationen verknüpfen.
 
@@ -75,7 +75,7 @@ Nachdem im vorangegangenen Abschnitt die Grundlagen der Datenrepräsentation fü
 
 \subsubsection{Der Transformer-Encoder}
 
-Der \textit{Transformer} wurde 2017 von Vaswani et al. vorgestellt \cite{Vaswani2017}. Anders als frühere Modelle wie RNNs oder LSTMs und Faltungsnetzwerke (CNNs) arbeitet er ohne Rekurrenz und Faltung und nutzt stattdessen Self-Attention. Die ursprüngliche Architektur besteht aus zwei Hauptkomponenten: einem Encoder, der die Eingabesequenz verarbeitet und in eine abstrakte Repräsentation überführt, und einem Decoder, der basierend darauf eine Ausgabesequenz generiert.
+Der \textit{Transformer} wurde 2017 von Vaswani et al. vorgestellt \cite{Vaswani2017}. Im Gegensatz zu früheren Modellarchitekturen, die primär auf Rekurrenz (z.\,B. RNNs, LSTMs) oder Faltung (CNNs) basierten, verzichtet der Transformer vollständig auf diese Mechanismen und nutzt stattdessen \textit{Self-Attention} als zentrales Element. Die ursprüngliche Architektur besteht aus zwei Hauptkomponenten: einem Encoder, der die Eingabesequenz verarbeitet und in eine abstrakte Repräsentation überführt, und einem Decoder, der basierend darauf eine Ausgabesequenz generiert.
 
 Für die Aufgabenstellung dieser Arbeit, bei der es um die Klassifikation von multimodalen Daten geht, ist vor allem der Encoder-Teil relevant. Encoder-only-Modelle, wie das in Abschnitt \ref{sec:text_representation} vorgestellte \gls{bert}, nutzen einen Stapel von Transformer-Blöcken, um für jedes Eingabe-Token einen kontextualisierten Vektor zu berechnen \cite{Devlin2019}. Im Gegensatz zu statischen Embeddings, bei denen ein Wort stets denselben Vektor erhält, integriert der Transformer-Encoder Informationen aus dem gesamten Kontext der Sequenz in die Repräsentation jedes einzelnen Tokens und dient damit als leistungsfähiger Feature-Extraktor.
 
@@ -83,17 +83,17 @@ Für die Aufgabenstellung dieser Arbeit, bei der es um die Klassifikation von mu
 
 Das zentrale Element eines jeden Transformer-Blocks ist der Attention-Mechanismus. Er ermöglicht es dem Modell, die Relevanz verschiedener Teile der Eingabe für den aktuellen Verarbeitungsschritt dynamisch zu gewichten. Vaswani et al. formalisieren dies als \textit{Scaled Dot-Product Attention} \cite{Vaswani2017}.
 
-Vereinfacht gesagt vergleicht das Modell eine Abfrage (\textit{Query} $Q$) mit vielen möglichen Kontextstellen (\textit{Keys} $K$) und bildet dann eine gewichtete Summe der zugehörigen Werte (\textit{Values} $V$). Tokens, die besser zur Query passen, erhalten höhere Gewichte. Mathematisch wird dies durch folgende Gleichung ausgedrückt:
+Vereinfacht gesagt vergleicht das Modell eine Abfrage (\textit{Query} $\mathbf{Q}$) mit vielen möglichen Kontextstellen (\textit{Keys} $\mathbf{K}$) und bildet dann eine gewichtete Summe der zugehörigen Werte (\textit{Values} $\mathbf{V}$). Tokens, die besser zur Query passen, erhalten höhere Gewichte. Mathematisch wird dies durch folgende Gleichung ausgedrückt:
 
 \begin{equation}
-    \text{Attention}(Q, K, V) = \text{softmax}\left(\frac{QK^T}{\sqrt{d_k}}\right)V
+    \text{Attention}(\mathbf{Q}, \mathbf{K}, \mathbf{V}) = \text{softmax}\left(\frac{\mathbf{Q}\mathbf{K}^T}{\sqrt{d_k}}\right)\mathbf{V}
 \end{equation}
 
-Hierbei berechnet das Skalarprodukt $QK^T$ die Ähnlichkeit zwischen der Query und den Keys. Der Faktor $\frac{1}{\sqrt{d_k}}$ dient der Skalierung, um numerische Instabilitäten bei großen Dimensionen zu vermeiden \cite{Vaswani2017}. Die Softmax-Funktion normalisiert diese Ähnlichkeitswerte zu Wahrscheinlichkeiten, die sich zu 1 aufsummieren. Schließlich wird eine gewichtete Summe der Values $V$ gebildet.
+Hierbei berechnet das Skalarprodukt $\mathbf{Q}\mathbf{K}^T$ die Ähnlichkeit zwischen der Query und den Keys. Der Faktor $\frac{1}{\sqrt{d_k}}$ dient der Skalierung, um numerische Instabilitäten bei großen Dimensionen zu vermeiden \cite{Vaswani2017}. Die Softmax-Funktion normalisiert diese Ähnlichkeitswerte zu Wahrscheinlichkeiten, die sich zu 1 aufsummieren. Schließlich wird eine gewichtete Summe der Values $\mathbf{V}$ gebildet.
 
 \subsubsection{Self-Attention vs. Cross-Attention}
 
-Ein wesentlicher Aspekt moderner Transformer-Architekturen und insbesondere multimodaler Modelle ist die Definition der Quellen für die Vektoren $Q$, $K$ und $V$. Hierbei wird zwischen \textit{Self-Attention} und \textit{Cross-Attention} unterschieden.
+Ein wesentlicher Aspekt moderner Transformer-Architekturen und insbesondere multimodaler Modelle ist die Definition der Quellen für die Vektoren $\mathbf{Q}$, $\mathbf{K}$ und $\mathbf{V}$. Hierbei wird zwischen \textit{Self-Attention} und \textit{Cross-Attention} unterschieden.
 
 \paragraph{Self-Attention (Intra-Modal)}
 Im Standard-Encoder, wie er von Vaswani et al. \cite{Vaswani2017} beschrieben wird, stammen Query, Key und Value aus derselben Eingabequelle (z.\,B. der Ausgabe des vorherigen Layers). Dies wird als Self-Attention bezeichnet.
@@ -105,7 +105,7 @@ Im Standard-Encoder, wie er von Vaswani et al. \cite{Vaswani2017} beschrieben wi
 \paragraph{Cross-Attention (Inter-Modal)}
 Für die Fusion unterschiedlicher Modalitäten, wie Text und Tabellendaten, ist die Cross-Attention von zentraler Bedeutung. Dieses Konzept findet sich in diversen multimodalen Architekturen \cite{Tan2019}.
 \begin{itemize}
-    \item \textbf{Funktionsweise:} Die Vektoren werden aus unterschiedlichen Quellen gespeist. Beispielsweise generiert Modalität A (z.\,B. Text) die Queries $Q$, während Modalität B (z.\,B. Tabelle) die Keys $K$ und Values $V$ bereitstellt.
+    \item \textbf{Funktionsweise:} Die Vektoren werden aus unterschiedlichen Quellen gespeist. Beispielsweise generiert Modalität A (z.\,B. Text) die Queries $\mathbf{Q}$, während Modalität B (z.\,B. Tabelle) die Keys $\mathbf{K}$ und Values $\mathbf{V}$ bereitstellt.
     \item \textbf{Zweck:} Ermöglichung eines Informationsflusses über Modalitätsgrenzen hinweg. Die Text-Repräsentationen können gezielt Informationen aus den Tabellen-Features integrieren, die für den aktuellen Kontext relevant sind. Dies bildet das theoretische Fundament für flexible Fusions-Architekturen, da es eine dynamische Verknüpfung heterogener Datenräume erlaubt.
 \end{itemize}
 
@@ -116,26 +116,26 @@ Voraussetzung für jede Fusion ist, dass die unterschiedlichen Modalitäten bere
 \subsubsection{Mechanismen der Fusion}
 
 Die technische Realisierung der Fusion, also \textit{wie} die Vektoren der unterschiedlichen Modalitäten zusammengeführt werden, kann durch verschiedene mathematische Operationen erfolgen \cite{Jiao2024, Baltrusaitis2019}.
-Ein zentrales Konzept ist hierbei die \textit{Joint Representation}. Das Ziel ist es, die unimodalen Eingangsvektoren in einen gemeinsamen semantischen Unterraum zu projizieren, um eine einzige, multimodale Repräsentation $Z$ zu erzeugen \cite{Jiao2024, Li2024}.
+Ein zentrales Konzept ist hierbei die \textit{Joint Representation}. Das Ziel ist es, die unimodalen Eingangsvektoren in einen gemeinsamen semantischen Unterraum zu projizieren, um eine einzige, multimodale Repräsentation $\mathbf{Z}$ zu erzeugen \cite{Jiao2024, Li2024}.
 Mathematisch lässt sich dieser Vorgang allgemein formulieren als:
 \begin{equation}
-    Z = f(X_{\text{text}}, X_{\text{tab}})
+    \mathbf{Z} = f(\mathbf{X}_{\text{text}}, \mathbf{X}_{\text{tab}})
 \end{equation}
-Wobei $f$ eine Funktion darstellt (beispielsweise ein neuronales Netz oder eine deterministische Operation), die aus den unimodalen Repräsentationen $X_{\text{text}}$ und $X_{\text{tab}}$ die fusionierte multimodale Repräsentation $Z$ berechnet \cite{Baltrusaitis2019}.
+Wobei $f$ eine Funktion darstellt (beispielsweise ein neuronales Netz oder eine deterministische Operation), die aus den unimodalen Repräsentationen $\mathbf{X}_{\text{text}}$ und $\mathbf{X}_{\text{tab}}$ die fusionierte multimodale Repräsentation $\mathbf{Z}$ berechnet \cite{Baltrusaitis2019}.
 
 Zu den gängigsten spezifischen Operationen zählen:
 
 \paragraph{Concatenation (Verkettung)}
 Dies ist die wohl einfachste Form der Fusion, bei der die Merkmalsvektoren lediglich hintereinander gehängt werden:
 \begin{equation}
-    Z = [X_{\text{text}} \parallel X_{\text{tab}}]
+    \mathbf{Z} = [\mathbf{X}_{\text{text}} \parallel \mathbf{X}_{\text{tab}}]
 \end{equation}
-Ein wesentlicher Vorteil ist, dass die Eingangsvektoren $X_{\text{text}}$ und $X_{\text{tab}}$ nicht dieselbe Dimension besitzen müssen. Die Dimension des Ergebnisvektors $Z$ entspricht der Summe der Einzeldimensionen. 
+Ein wesentlicher Vorteil ist, dass die Eingangsvektoren $\mathbf{X}_{\text{text}}$ und $\mathbf{X}_{\text{tab}}$ nicht dieselbe Dimension besitzen müssen. Die Dimension des Ergebnisvektors $\mathbf{Z}$ entspricht der Summe der Einzeldimensionen. 
 
 \paragraph{Addition (Summierung)}
 Hierbei werden die Vektoren elementweise addiert:
 \begin{equation}
-    Z = X_{\text{text}} + X_{\text{tab}}
+    \mathbf{Z} = \mathbf{X}_{\text{text}} + \mathbf{X}_{\text{tab}}
 \end{equation}
 Dies setzt zwingend voraus, dass beide Vektoren dieselbe Dimension aufweisen, weshalb oft eine vorherige Projektion notwendig ist.
 

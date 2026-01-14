@@ -1,0 +1,234 @@
+class CrossBert(BertForSequenceClassification):
+    """BERT classifier with Early and Late cross-attention over tabular tokens.
+ 
+    Pipeline (if enabled):
+        Early:  CLS_from_embeddings  --(cross-attn w/ tab tokens)-->  CLS_early
+                replace token[0] in embeddings with CLS_early
+                ↓
+                BERT Encoder
+                ↓
+        Late:   CLS_from_encoder     --(cross-attn w/ tab tokens)-->  CLS_late
+                ↓
+                Classifier
+ 
+    Notation:
+        B: batch size
+        T: number of tokens (num_tokens)
+        H: hidden size / embedding dimension
+        F: number of raw tabular features
+ 
+    Shapes:
+        input_ids:   (B, T_text)
+        attention_mask: (B, T_text)
+        extra_data:  (B, F)
+        tab tokens:  (B, T_tab, H)
+        CLS token:   (B, 1, H)
+ 
+    Args:
+        cfg: HuggingFace BertConfig.
+        extra_data_dim: Number of raw tabular features F.
+        cross_attention_positions: Dict with keys in {'early','late'} and bool values.
+        num_tab_tokens: Number of tab tokens T_tab produced by the tokenizer.
+        cross_attention_heads: Optional; number of heads for cross-attention (default: cfg.num_attention_heads).
+    """
+ 
+    def __init__(
+        self,
+        cfg: BertConfig,
+        extra_data_dim: int,
+        cross_attention_positions: Dict[str, bool],
+        num_tab_tokens: int = 4,
+        cross_attention_heads: Optional[int] = None,
+        cross_attention_intermediate_size: Optional[int] = None,
+        **kwargs
+    ):
+        super().__init__(cfg)
+        self.config: BertConfig
+        self.hidden_size = cfg.hidden_size
+        self.num_tab_features = extra_data_dim
+        self.num_tab_tokens = num_tab_tokens
+        self.cross_attn_heads = cross_attention_heads or cfg.num_attention_heads
+        self.intermediate_size = cross_attention_intermediate_size or cfg.intermediate_size
+        self.hidden_dropout_prob = cfg.hidden_dropout_prob
+        self.tabular_tokenizer = None
+
+        # Tokenizer for tabular features: (B, F) -> (B, T_tab, H)
+        if self.num_tab_tokens > 0:
+            self.tabular_tokenizer = TabularTokenizer(
+                num_features=self.num_tab_features,
+                hidden_size=self.hidden_size,
+                num_tab_tokens=self.num_tab_tokens,
+                dropout=self.hidden_dropout_prob,
+            )
+ 
+        # Cross-attention blocks (optional)
+        self.cross_attn_early = None
+        self.cross_attn_late = None
+        if cross_attention_positions.get("early", False):
+            self.cross_attn_early = CrossAttentionBlock(
+                embed_dim=self.hidden_size,
+                num_heads=self.cross_attn_heads,
+                dim_feedforward=self.intermediate_size,
+                dropout=self.hidden_dropout_prob,
+                batch_first=True,
+            )
+
+        if cross_attention_positions.get("late", False):
+            self.cross_attn_late = CrossAttentionBlock(
+                embed_dim=self.hidden_size,
+                num_heads=self.cross_attn_heads,
+                dim_feedforward=self.intermediate_size,
+                dropout=self.hidden_dropout_prob,
+                batch_first=True,
+            )
+ 
+        # Post-fusion normalization before classification
+        self.post_fusion_ln = nn.LayerNorm(self.hidden_size)
+        self.post_fusion_dropout = nn.Dropout(self.hidden_dropout_prob)
+ 
+        logger.info(
+            "CrossBert initialized: H=%d, heads=%d, num_tab_tokens=%d, cross_attention_intermediate_size=%d, hidden_dropout_prob=%f, hidden early=%s, late=%s",
+            self.hidden_size,
+            self.cross_attn_heads,
+            self.num_tab_tokens,
+            self.intermediate_size,
+            self.hidden_dropout_prob,
+            bool(self.cross_attn_early),
+            bool(self.cross_attn_late),
+        )
+
+        logger.info("Applying custom weight initialization to new modules.")
+        if self.tabular_tokenizer:
+            self.tabular_tokenizer.apply(self._init_weights)
+        if self.cross_attn_early:
+                self.cross_attn_early.apply(self._init_weights)
+        if self.cross_attn_late:
+                self.cross_attn_late.apply(self._init_weights)
+        self.post_fusion_ln.apply(self._init_weights)
+
+    def _check_tensor_finite(self, name, t):
+        if t is not None and not torch.isfinite(t).all():
+            raise RuntimeError(f"{name} contains NaN/Inf")
+
+    def _init_weights(self, module):
+        """Initializes the weights of the custom modules."""
+        if isinstance(module, nn.Linear):
+            nn.init.xavier_uniform_(module.weight)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.LayerNorm):
+            nn.init.ones_(module.weight)
+            nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.MultiheadAttention):
+            if module.in_proj_weight is not None:
+                nn.init.xavier_uniform_(module.in_proj_weight)
+            if module.out_proj.weight is not None:
+                nn.init.xavier_uniform_(module.out_proj.weight)
+            if module.in_proj_bias is not None:
+                nn.init.zeros_(module.in_proj_bias)
+ 
+    def forward(
+        self,
+        input_ids: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        token_type_ids: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.Tensor] = None,
+        head_mask: Optional[torch.Tensor] = None,
+        inputs_embeds: Optional[torch.Tensor] = None,
+        labels: Optional[torch.Tensor] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+        extra_data: Optional[torch.Tensor] = None,
+        tab_mask: Optional[torch.Tensor] = None,
+    ) -> SequenceClassifierOutput:
+        """Forward pass with Early/Late cross-attention around the BERT encoder.
+ 
+        Args:
+            input_ids: (B, T_text) token ids (mutually exclusive with inputs_embeds).
+            attention_mask: (B, T_text) text attention mask.
+            token_type_ids: (B, T_text) segment ids (optional).
+            position_ids: Optional positional ids.
+            head_mask: Optional head mask for BERT attention heads.
+            inputs_embeds: (B, T_text, H) precomputed input embeddings (exclusive with input_ids).
+            labels: Training labels for loss computation.
+            output_attentions: Return attentions from the BERT encoder.
+            output_hidden_states: Return hidden states from the BERT encoder.
+            return_dict: Return HF `SequenceClassifierOutput` (default: True).
+            extra_data: (B, F) tabular features to fuse. If None, model behaves like vanilla BERT head.
+            tab_mask: (B, T_tab) with 1=keep, 0=pad for tab tokens (optional).
+ 
+        Returns:
+            SequenceClassifierOutput with `loss` (if labels provided) and `logits`.
+        """
+        if return_dict is None:
+            return_dict = True
+ 
+        # Build tabular tokens if provided
+        tab_tokens = None
+        if extra_data is not None and self.tabular_tokenizer is not None:
+            tab_tokens = self.tabular_tokenizer(extra_data)  # (B, T_tab, H)
+ 
+        # Compute input embeddings
+        if inputs_embeds is None:
+            embeddings = self.bert.embeddings(
+                input_ids=input_ids,
+                position_ids=position_ids,
+                token_type_ids=token_type_ids,
+                inputs_embeds=None,
+                past_key_values_length=0,
+            )  # (B, T_text, H)
+        else:
+            embeddings = inputs_embeds  # (B, T_text, H)
+ 
+        # Optional Early cross-attention on CLS (before encoder)
+        if (self.cross_attn_early is not None) and (tab_tokens is not None):
+            cls_early = embeddings[:, :1, :]  # (B, 1, H)
+            logger.debug("Applying EARLY cross-attention (pre-encoder)")
+
+            cls_early = self.cross_attn_early(cls_early, tab_tokens, tab_mask=tab_mask)  # (B, 1, H)
+            self._check_tensor_finite("cls_early", cls_early)
+            embeddings = torch.cat([cls_early, embeddings[:, 1:, :]], dim=1)  # (B, T_text, H)
+
+            self._check_tensor_finite("embeddings (pre-encoder)", embeddings)
+ 
+        # BERT Encoder
+        encoder_outputs = self.bert.encoder(
+            hidden_states=embeddings,
+            attention_mask=self.bert.get_extended_attention_mask(attention_mask, attention_mask.shape, attention_mask.device) # type: ignore
+            if attention_mask is not None else None,
+            head_mask=head_mask,
+            encoder_hidden_states=None,
+            encoder_attention_mask=None,
+            past_key_values=None,
+            use_cache=False,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=True,
+        )
+ 
+        sequence_output = encoder_outputs.last_hidden_state  # (B, T_text, H)
+        cls_token = sequence_output[:, :1, :]  # (B, 1, H)
+
+        self._check_tensor_finite("sequence_output", sequence_output)
+        self._check_tensor_finite("cls_token (pre-late)", cls_token)
+ 
+        logger.debug(f"Stats CLS_Token: mean={cls_token.mean():.4f}, std={cls_token.std():.4f}, min={cls_token.min():.4f}, max={cls_token.max():.4f}")
+
+        # Optional Late cross-attention on CLS (after encoder)
+        if (self.cross_attn_late is not None) and (tab_tokens is not None):
+            cls_token = self.cross_attn_late(cls_token, tab_tokens, tab_mask=tab_mask)  # (B, 1, H)
+
+            self._check_tensor_finite("cls_token (post-late)", cls_token)
+ 
+        # Classification
+        fused_cls = self.post_fusion_dropout(self.post_fusion_ln(cls_token)).squeeze(1)  # (B, H)
+        logits = self.classifier(fused_cls)  # (B, num_labels)
+
+        self._check_tensor_finite("logits", logits)
+ 
+        return SequenceClassifierOutput(
+            logits=logits,
+            hidden_states=encoder_outputs.hidden_states if output_hidden_states else None,
+            attentions=encoder_outputs.attentions if output_attentions else None,
+        )
