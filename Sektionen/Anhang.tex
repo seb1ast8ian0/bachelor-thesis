@@ -231,3 +231,152 @@ class TabularTokenizer(nn.Module):
     def forward(self, tabular_input):
         return torch.cat([proj(tabular_input).unsqueeze(1) for proj in self.projections], dim=1)
 \end{lstlisting}
+
+\subsection{Evaluation auf dem Petfinder-Datensatz}
+\label{app:petfinder_evaluation}
+
+Zur Überprüfung der Generalisierungsfähigkeit der untersuchten Architekturen wurde eine zusätzliche Evaluation auf dem Petfinder-Datensatz \cite{KagglePetfinder} durchgeführt (siehe Abschnitt \ref{sec:data_basis}). Dieser Datensatz (PetFinder.my Adoption Prediction) stellt ein ordinales Klassifikationsproblem dar, bei dem die Adoptionsgeschwindigkeit von Haustieren in fünf Kategorien (0 bis 4) eingeteilt wird. Als primäre Bewertungsmetrik dient der \Gls{qwk}, der die ordinale Natur der Klassen berücksichtigt.
+
+Tabelle \ref{tab:petfinder_results} fasst die Ergebnisse der verschiedenen Modellarchitekturen auf den Trainings- und Testdaten zusammen.
+
+\begin{table}[h]
+    \centering
+    \caption{Ergebnisse der Evaluation auf dem Petfinder-Datensatz (Metrik: \Gls{qwk})}
+    \label{tab:petfinder_results}
+    \begin{tabular}{lcc}
+        \hline
+        \textbf{Modell} & \textbf{Train QWK} & \textbf{Test QWK} \\
+        \hline
+        SumBERT & 0{,}1732 & 0{,}0980 \\
+        ConcatBERT & 0{,}1204 & 0{,}0534 \\
+        CrossBERT Early & 0{,}2041 & 0{,}1225 \\
+        CrossBERT Late & 0{,}2410 & 0{,}1680 \\
+        CrossBERT Hybrid & 0{,}2737 & 0{,}2064 \\
+        \hline
+    \end{tabular}
+\end{table}
+
+Abbildung \ref{fig:petfinder_metrics} visualisiert die Konfusionsmatrizen der Modelle auf dem Testdatensatz. Es zeigt sich, dass CrossBERT Hybrid auch in diesem Szenario die besten Ergebnisse erzielt.
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=\textwidth]{Bilder/petfinder_test_metrics.png}
+    \caption{Konfusionsmatrizen der Modelle auf dem Petfinder-Testdatensatz. Die Titel zeigen den jeweiligen Test-QWK.}
+    \label{fig:petfinder_metrics}
+\end{figure}
+
+\paragraph{Methodische Einschränkung.}
+Eine wesentliche methodische Einschränkung liegt in der Optimierung auf eine binäre Unterscheidung (Klasse 0 vs.\ Rest), die aus der Trainingslogik des primären Regress-Datensatzes übernommen wurde. Um die Vergleichbarkeit der Architekturen zu gewährleisten, wurde diese Logik beibehalten. Technisch wird dies durch die Klasse \texttt{MetricsAggregator} umgesetzt, deren Methode \texttt{update} die Zielvariablen mittels \texttt{(y\_true != 0).long()} binarisiert. Folglich werden alle Klassen 1 bis 4 zu einer positiven Klasse zusammengefasst, während Klasse 0 lediglich als negative Hintergrundklasse dient. Dies führt dazu, dass die Klasse 0 nicht als eigenständige Zielklasse optimiert wird, was das Fehlen expliziter Vorhersagen für diese Kategorie im Petfinder-Datensatz erklärt (vgl. Abbildung \ref{fig:petfinder_metrics}).
+
+\subsection{Evaluation auf dem E-Commerce-Datensatz}
+\label{app:ecommerce_evaluation}
+
+Zusätzlich zur Petfinder-Evaluation wurden die Modelle auch auf dem Women's E-Commerce Clothing Reviews Datensatz \cite{KaggleEcommerce} evaluiert. Dieser Datensatz stellt ein binäres Klassifikationsproblem dar (Sentiment-Analyse).
+
+Tabelle \ref{tab:ecommerce_results} fasst die Ergebnisse zusammen.
+
+\begin{table}[h]
+    \centering
+    \caption{Ergebnisse der Evaluation auf dem E-Commerce-Datensatz (Seed 777)}
+    \label{tab:ecommerce_results}
+    \begin{tabular}{lcc}
+        \hline
+        \textbf{Modell} & \textbf{AUC (Test)} & \textbf{AP (Test)} \\
+        \hline
+        SumBERT & 0{,}952 & 0{,}988 \\
+        ConcatBERT & 0{,}950 & 0{,}987 \\
+        CrossFitter & 0{,}948 & 0{,}988 \\
+        CrossBERT Early & 0{,}951 & 0{,}988 \\
+        CrossBERT Late & 0{,}951 & 0{,}988 \\
+        CrossBERT Hybrid & 0{,}949 & 0{,}987 \\
+        \hline
+    \end{tabular}
+\end{table}
+
+\subsection{Robustheitsprüfung mit Random Seed 333}
+\label{app:seed_333_evaluation}
+
+Um die Stabilität der Ergebnisse zu verifizieren, wurden die Modelle zusätzlich mit einem alternativen Random Seed (333) trainiert. Tabelle \ref{tab:seed_333_results} zeigt die Ergebnisse auf dem Testdatensatz.
+
+\begin{table}[h]
+    \centering
+    \caption{Ergebnisse der Evaluation mit Seed 333}
+    \label{tab:seed_333_results}
+    \begin{tabular}{lcc}
+        \hline
+        \textbf{Modell} & \textbf{AUC (Test)} & \textbf{AP (Test)} \\
+        \hline
+        ConcatBERT & 0{,}9601 & 0{,}5445 \\
+        SumBERT & 0{,}9703 & 0{,}5983 \\
+        CrossBERT Early & 0{,}9696 & 0{,}6055 \\
+        CrossBERT Late & 0{,}9704 & 0{,}6019 \\
+        CrossBERT Hybrid & 0{,}9717 & 0{,}5963 \\
+        \hline
+    \end{tabular}
+\end{table}
+
+\subsection{Ablationsstudie: Tabular Tokenizer V2}
+\label{app:ablation_tokenizer_v2}
+
+In dieser Untersuchung wird der Einfluss einer modifizierten Variante des Tabular Tokenizers (Version 2) auf die Modellleistung analysiert. Tabelle \ref{tab:ablation_tokenizer_v2} vergleicht die Standard-CrossBERT-Varianten mit den entsprechenden Konfigurationen unter Verwendung des Tabular Tokenizers V2.
+
+\begin{table}[h]
+    \centering
+    \caption{Ergebnisse der Ablationsstudie zum Tabular Tokenizer V2}
+    \label{tab:ablation_tokenizer_v2}
+    \begin{tabular}{lcc}
+        \hline
+        \textbf{Modell} & \textbf{AUC (Test)} & \textbf{AP (Test)} \\
+        \hline
+        CrossBERT Early & 0{,}974 & 0{,}620 \\
+        CrossBERT Late & 0{,}975 & 0{,}614 \\
+        CrossBERT Hybrid & 0{,}974 & 0{,}619 \\
+        \hline
+        CrossBERT Early + TabTokV2 & 0{,}968 & 0{,}581 \\
+        CrossBERT Late + TabTokV2 & 0{,}974 & 0{,}621 \\
+        CrossBERT Hybrid + TabTokV2 & 0{,}974 & 0{,}605 \\
+        \hline
+    \end{tabular}
+\end{table}
+
+\subsection{Ablationsstudie: Gating-Mechanismus}
+\label{app:ablation_gating}
+
+Zusätzlich wurde untersucht, ob ein Gating-Mechanismus (CrossBERT Gated Hybrid) die Performance der Hybrid-Variante weiter verbessern kann. Tabelle \ref{tab:ablation_gating} stellt die Ergebnisse gegenüber.
+
+\begin{table}[h]
+    \centering
+    \caption{Ergebnisse der Ablationsstudie zum Gating-Mechanismus}
+    \label{tab:ablation_gating}
+    \begin{tabular}{lcc}
+        \hline
+        \textbf{Modell} & \textbf{AUC (Test)} & \textbf{AP (Test)} \\
+        \hline
+        CrossBERT Hybrid & 0{,}974 & 0{,}619 \\
+        CrossBERT Gated Hybrid & 0{,}974 & 0{,}624 \\
+        \hline
+    \end{tabular}
+\end{table}
+
+\subsection{Ablationsstudie: Anzahl der Tabular Tokens}
+\label{app:ablation_num_tokens}
+
+In dieser Versuchsreihe wurde der Einfluss der Anzahl der Tabular Tokens ($n_{tab}$) auf die Modellleistung der CrossBERT Hybrid Architektur untersucht. Tabelle \ref{tab:ablation_num_tokens} zeigt die Ergebnisse für verschiedene Werte von $n_{tab}$.
+
+\begin{table}[h]
+    \centering
+    \caption{Ergebnisse der Ablationsstudie zur Anzahl der Tabular Tokens ($n_{tab}$)}
+    \label{tab:ablation_num_tokens}
+    \begin{tabular}{lcc}
+        \hline
+        \textbf{Konfiguration} & \textbf{AUC (Test)} & \textbf{AP (Test)} \\
+        \hline
+        CrossBERT Hybrid ($n_{tab} = 0$) & 0{,}889 & 0{,}442 \\
+        CrossBERT Hybrid ($n_{tab} = 1$) & 0{,}973 & 0{,}611 \\
+        CrossBERT Hybrid ($n_{tab} = 2$) & 0{,}974 & 0{,}617 \\
+        CrossBERT Hybrid ($n_{tab} = 4$) & 0{,}975 & 0{,}617 \\
+        CrossBERT Hybrid ($n_{tab} = 8$) & 0{,}937 & 0{,}619 \\
+        CrossBERT Hybrid ($n_{tab} = 16$) & 0{,}954 & 0{,}618 \\
+        \hline
+    \end{tabular}
+\end{table}

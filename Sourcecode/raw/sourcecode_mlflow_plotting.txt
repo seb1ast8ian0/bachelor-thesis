@@ -1,0 +1,1756 @@
+----- src/hf4_regress_exploration/model/steps/mlflow.py -----
+
+import logging
+import os
+import tempfile
+from collections.abc import Callable
+from datetime import datetime
+from pathlib import Path
+from types import MethodType
+from typing import Any, TypeAlias, Union
+from urllib.parse import urlparse
+
+import matplotlib.pyplot as plt
+import mlflow
+import numpy as np
+import optuna
+import pandas as pd
+import shap
+import yaml
+from git_root import git_root
+from hf4_utils.utils.loading import get_current_branch
+from lightning.pytorch.loggers import MLFlowLogger
+from matplotlib.axes import Axes
+from matplotlib.figure import Figure
+from omegaconf import DictConfig, OmegaConf
+from quantcore.ducttape import misc
+from quantcore.learn.compose import ColumnTransformer
+from scipy.stats import spearmanr
+from sklearn.metrics import (
+    average_precision_score,
+    log_loss,
+    mean_absolute_error,
+    mean_absolute_percentage_error,
+    mean_squared_error,
+    roc_auc_score,
+)
+from sklearn.pipeline import Pipeline
+from transformers import BertForSequenceClassification
+from watchdog.observers import Observer
+
+from hf4_regress_exploration.model.steps.bert_funcs import make_model_contiguous
+from hf4_regress_exploration.model.steps.helper_classes import (
+    ModelData,
+    TokenizationAnalysis,
+)
+from hf4_regress_exploration.model.steps.mlflow_plotting_functions import (
+    plot_cf_curves,
+    plot_masked_score_distribution,
+    pr_plot,
+    pred_hist,
+    roc_plot,
+)
+from hf4_regress_exploration.utils.environment import MLFLOW_DIRECTORY
+from hf4_regress_exploration.utils.mlflow import log_code, setup_log_monitor
+
+EPS = 1e-8  # To avoid division by 0.
+
+NumpyNumber: TypeAlias = Union[np.floating, np.integer]
+
+logger = logging.getLogger()
+
+
+def setup_mlflow(cfg: DictConfig) -> tuple[MLFlowLogger, Observer]:
+    """Starts an mlflow run in the experiment specified by the config"""
+    # mlflow.enable_system_metrics_logging()
+    mlflow.set_tracking_uri(MLFLOW_DIRECTORY)
+    mlflow.set_experiment(cfg["experiment"])
+    model_type = cfg.tuning_parameters.model_type
+    if cfg["mlflow_run_name"] is not None:
+        run_name = cfg["mlflow_run_name"]
+    else:
+        time_of_run = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+        run_name = f'{cfg["sparte"]}: {"LGBM x BERT" if cfg["use_bert_scoring"] else model_type} : {time_of_run}'
+
+    mlflow.start_run(
+        run_name=run_name, log_system_metrics=cfg.mlflow.log_system_metrics
+    )
+
+    if cfg["mlflow"]["tags"] is not None:
+        # for some reason setting the tags during the start_run results in a bug
+        mlflow.set_tags(cfg["mlflow"]["tags"])
+    mlflow.log_param("owner", os.environ["DOMINO_STARTING_USERNAME"])
+    mlflow.log_param("hash", misc.head_commit_hash(git_root()))
+    run_id = mlflow.active_run().info.run_id
+    mlflow.log_param("run_id", run_id)
+    mlflow.log_param("git_branch", get_current_branch())
+
+    config_dict: dict = OmegaConf.to_container(cfg, resolve=True)  # type: ignore
+    # remove if present
+    config_dict.pop("abbreviations", None)
+    config_dict.pop("sampling_filters", None)
+    config_dict.pop("classification_vars", None)
+    # flatten dict
+    df = pd.json_normalize(config_dict, sep="_")
+    d_flat = df.to_dict(orient="records")[0]
+    for key, value in d_flat.items():
+        mlflow.log_param(key, value)
+
+    # log terminal output continuously
+    observer = setup_log_monitor(
+        Path(os.path.join(cfg.paths.output_dir, "terminal.log")),
+        mlflow_run=mlflow.active_run(),
+    )
+
+    # only necessary for lightning logger
+    mlflow_logger = MLFlowLogger(
+        experiment_name=cfg["experiment"],
+        tracking_uri=str(MLFLOW_DIRECTORY),
+        run_id=run_id,
+        log_model=cfg.log_model_mlflow,
+    )
+
+    # patch the mlflow logger to not finalize the mlflow run after training end
+    # close the mlflow run ourselfs. Otherwise problems with bert cross fitter
+    def finalize_override(self, status: str = "success") -> None:
+        # log checkpoints as artifacts
+        if self._checkpoint_callback:
+            self._scan_and_log_checkpoints(self._checkpoint_callback)
+
+    mlflow_logger.finalize = MethodType(finalize_override, mlflow_logger)
+
+    return mlflow_logger, observer
+
+
+def close_mlflow(observer: Observer):
+    """
+    Stop the observer and join the observer thread.
+
+    Params:
+    - observer
+        The observer object for continuously logging terminal output to mflow
+    """
+    observer.stop()
+    observer.join()
+    mlflow.end_run()
+    logger.info("Finished mlflow logging")
+
+
+def load_mlflow_run(run_id: str) -> mlflow.entities.run.Run:
+    """Loads the past mlflow run based on the given run id"""
+    return mlflow.tracking.MlflowClient(tracking_uri=str(MLFLOW_DIRECTORY)).get_run(
+        run_id=run_id
+    )
+
+
+def get_propensities(run_id: str) -> pd.Series:
+    """Get the series of propensity score from a past run of the propensity model
+
+    Parameters
+    ----------
+    run_id : str
+        The run id of the propensity model run to be used
+
+    Returns
+    -------
+    pd.DataFrame
+        A DataFrame with the claims and their respective propensity of being labelled
+    """
+    run = load_mlflow_run(run_id)
+    return load_full_predictions(run)["preds"]
+
+
+def log_fig(fig: Figure, image_name: str, artifact_folder: str = "images") -> None:
+    """Logs matplotlib figures to mlflow as artifacts in a artifact_folder.
+
+    Parameters
+    ----------
+    fig:
+        figure to log
+    image_name:
+        artifact name
+    artifact_folder:
+        location of the artifact
+    """
+    artifact_file = os.path.join(artifact_folder, image_name)
+    if isinstance(fig, Figure):
+        # mlflow can log matplotlib like figures directly
+        mlflow.log_figure(fig, artifact_file)
+    else:
+        raise ValueError(f"fig object not Figure object {type(fig)}")
+
+
+def prepare_df_plot(
+    df: pd.DataFrame, class_idx: int, tset: str
+) -> tuple[pd.DataFrame, str, str]:
+    """Prepare the DataFrame for plotting based on class index and set.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        The full DataFrame.
+    class_idx : int
+        Current class index.
+    tset : str
+        Train or test set identifier.
+
+    Returns
+    -------
+    pd.DataFrame, str, str
+        The prepared DataFrame, proba_colname, save_name_class
+    """
+    # Extracting the right split.
+    df_plot = df.query(f"train_test == '{tset}'").copy()
+
+    # Address binary operation for class_idx != 0
+    if class_idx == 0:
+        # y
+        df_plot["curr_class"] = df_plot.y_class.apply(lambda x: int(x != class_idx))
+        # proba
+        df_plot[f"1 - proba_{class_idx}"] = 1 - df_plot[f"proba_{class_idx}"]
+        proba_colname = f"1 - proba_{class_idx}"
+        save_name_class = "binarized"
+    else:
+        df_plot["curr_class"] = df_plot.y_class.apply(lambda x: int(x == class_idx))
+        proba_colname = f"proba_{class_idx}"
+        save_name_class = f"{class_idx}"
+
+    return df_plot, proba_colname, save_name_class
+
+
+def log_model_plots(model_data: ModelData, is_savings_run: bool = True) -> None:
+    """Logs a series of model plots to mlflow including:
+    1.) ROC and PR curves for train/test on all, labelled, and unlabelled data
+    2.) Distribution of predictions for all, labelled, and unlabelled data
+    3.) Economic plots for the model
+
+    Parameters
+    ----------
+    model_data : ModelData
+        Includes all the data
+    """
+    if is_savings_run:
+        # Logging counterfactual curves on labelled samples.
+        fig = plot_cf_curves(model_data)
+        log_fig(fig, "counterfactual_curves.png")
+
+    df_all = pd.DataFrame(
+        {
+            "y_class": model_data.y_class,
+            "train_test": model_data.sample,
+            **model_data.preds_proba_train_test_model,
+        }
+    )
+    df_labelled_only = df_all[model_data.data["is_labelled"] == 1]
+    df_unlabelled = df_all[model_data.data["is_labelled"] == 0]
+
+    data_splits = {
+        "all": df_all,
+        "labelled": df_labelled_only,
+        "unlabelled": df_unlabelled,
+    }
+
+    plot_dict: dict[str, Callable[[pd.DataFrame, Axes, str, str], None]] = {
+        "prediction_histogram": pred_hist,
+        "ROC_curves": roc_plot,
+        "PR_curves": pr_plot,
+    }
+
+    for plot_name, plot_func in plot_dict.items():
+        for class_idx in range(0, model_data.num_classes):
+            for name, df in data_splits.items():
+                # ROC and PR curves don't make sense for unlabelled data
+                # since it is unkown if a sample is positive
+                if name == "unlabelled" and plot_name != "prediction_histogram":
+                    continue
+
+                fig, axes = plt.subplots(1, 2, figsize=(8, 4))
+                for ax, tset in zip(axes, ["train", "test"]):
+                    df_plot, proba_colname, save_name_class = prepare_df_plot(
+                        df, class_idx, tset
+                    )
+                    plot_func(df_plot, ax, tset, proba_colname)
+
+                if plot_name == "prediction_histogram":
+                    yearly_volume = (
+                        len(df) / model_data.data.first_erledigung_date_year.nunique()
+                    )
+                    fig.suptitle(f"Yearly sample Size = {yearly_volume:.2f}")
+
+                fig.tight_layout()
+                log_fig(fig, f"{plot_name}/{name}_class_{save_name_class}.png")
+                plt.close(fig)
+
+
+def log_table(filename: str, df: pd.DataFrame, artifact_folder: str = "tables") -> None:
+    """Helper function for cleanly logging tables to mlflow.
+    Currently supports csv and parquet.
+
+    Parameters
+    ----------
+    filename : str
+        Name of the table file to be logged
+    df : pd.DataFrame
+        The table to be logged
+    artifact_folder: str
+        Name of the artifcat folder. Default tables
+
+    Raises
+    ------
+    ValueError
+        Raised if format other than .csv or .parquet is detected
+    """
+    with tempfile.TemporaryDirectory() as tmpdirname:
+        file_path = os.path.join(tmpdirname, filename)
+        if filename.endswith(".parquet"):
+            df.to_parquet(file_path, index=True)
+        elif filename.endswith(".csv"):
+            df.to_csv(file_path, index=True)
+        elif filename.endswith(".xlsx"):
+            df.to_excel(file_path, index=False)
+        else:
+            raise ValueError(
+                "Unsupported file type. Must be .csv or .parquet or .xlsx!"
+            )
+        mlflow.log_artifact(file_path, artifact_folder)
+
+
+def log_masked_positives_performance(model_data: ModelData) -> None:
+    """Logs the dataframe of the false negative scores, as well as a histogram of their percentiles, and other metrics
+
+    Parameters
+    ----------
+    model_data: ModelData
+        The model data including all prediction scores
+    """
+    df_masked = pd.DataFrame(
+        {
+            "missing_label": ~model_data.data[model_data.trains]["is_labelled"],
+            "is_masked_train": model_data.is_masked_train,
+            "preds_train_test": model_data.preds_proba_train_test_model[
+                model_data.trains
+            ],
+            "observed_label": model_data.y_class_train,
+            "true_label": np.where(
+                (model_data.y_class_train == 1) | model_data.is_masked_train, 1, 0
+            ),
+        },
+        index=model_data.y_class_train.index,
+    )
+
+    df_masked_or_unlabelled = df_masked.query("missing_label | is_masked_train")
+    df_masked_or_labelled_negatives = df_masked.query(
+        "~missing_label & (observed_label == 0)"
+    )
+
+    for set_name, df_set in zip(
+        ["masked_and_unlabelled", "masked_and_labelled_negatives"],
+        [df_masked_or_unlabelled, df_masked_or_labelled_negatives],
+    ):
+
+        # PR-curve
+        fig, ax = plt.subplots(1, 1)
+        pr_plot(df_set, ax, set_name, y="true_label", proba_colname="preds_train_test")
+        fig.tight_layout()
+        fig = plt.gcf()
+        log_fig(fig, f"PR_curves_{set_name}.png")
+
+        # ROC-curve
+        fig, ax = plt.subplots(1, 1)
+        roc_plot(df_set, ax, set_name, y="true_label", proba_colname="preds_train_test")
+        fig.tight_layout()
+        fig = plt.gcf()
+        log_fig(fig, f"ROC_curves_{set_name}.png")
+
+        # distribution of percentiles
+        log_distribution_of_masked_predictions(df_set, set_name)
+
+
+def log_bert_crossfitted_scores(model_data: ModelData, on_endo: bool = False) -> None:
+    """Logs the out-of-sample scores generated by the cross-fitted bert models
+
+    Parameters
+    ----------
+    model_data : ModelData
+        The model data from the run
+    on_endo: Bool
+        Whether X_endo has to be used instead of X, as scores have been
+        computed considering endogenous information.
+    """
+    bert_scores = pd.concat(
+        [
+            (
+                model_data.X[[k for k in model_data.X.keys() if "bert_score" in k]]
+                if not on_endo
+                else model_data.X_endo[  # type: ignore
+                    [k for k in model_data.X.keys() if "bert_score" in k]
+                ]
+            ),
+            model_data.data[[k for k in model_data.data.keys() if "bert_score" in k]],
+        ],
+        axis=1,
+    )
+    bert_scores["schadenvorgang_id"] = model_data.data["schadenvorgang_id"]
+
+    log_table(
+        "bert_scores.parquet",
+        bert_scores,
+    )
+
+
+def _rank_potential_false_negatives(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Ranks potential false negatives correctly handling binary or multiclass probabilities
+    saved in the output dictionary.
+    """
+    # Return the first 20 positively labelled samples with the largest
+    # negative class probability. If the negative class probability
+    # is the largest, then the sample represents an actual false negative.
+    df_filtered = df[(df["class_label"] != 0)].copy()
+    return df_filtered.sort_values(by="proba_0", ascending=False).head(20)
+
+
+def _rank_potential_false_positives(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Ranks potential false positives correctly handling binary or multiclass probabilities
+    saved in the output dictionary.
+    """
+    # Return the first 20 negatively labelled samples having the largest
+    # probability over the non negative classes. If the negative class
+    # probability is not the largest one, samples actually represent
+    # false positives.
+    df_filtered = df[(df["class_label"] == 0)].copy()
+    # Probabilities over positive classes
+    df_filtered["pos_classes_prob"] = (
+        1 - df_filtered["proba_0"]
+    )  # under the assumption of mutually exclusive classes.
+    return (
+        df_filtered.sort_values(by="pos_classes_prob", ascending=False)
+        .head(20)
+        .drop("pos_classes_prob", axis=1)
+    )
+
+
+def log_full_predictions(model_data: ModelData, cfg: DictConfig):
+    """Logs a dataframe of claims with labels and predictions in MLFLow for the entire dataset.
+    Additionally saves the clearest false positives among unlabelled and false negatives among labelled data as a csv file
+
+    Parameters
+    ----------
+    model_data : ModelData
+        The full dataset including train, val, and test
+    cfg : DictConfig
+        config
+    """
+    # Leverage results obtained training on full data
+    # to ensure the model has leveraged all the information.
+    df = (
+        model_data.data[["schadenvorgang_id"]]
+        .astype(int)
+        .assign(
+            class_label=model_data.y_class,
+            is_labelled=model_data.data["is_labelled"],
+            savings=model_data.y_savings,
+            preds_savings=model_data.preds_savings_full_model,
+            preds=model_data.preds_full_model,  # obtained leveraging endogenous features if predict_on_endo is set to True
+            **model_data.preds_proba_full_model,  # df containing probs over all classes.
+        )
+    )
+    log_table("full_predictions.parquet", df)
+
+    # currently only train a full model for lgbm so only in this case it makes sense to log the train test model separate
+    if cfg.tuning_parameters.model_type == "gbdt":
+        train_test_df = (
+            model_data.data[["schadenvorgang_id"]]
+            .astype(int)
+            .assign(
+                # recover these from full_predictions?
+                # class_label=model_data.y_class,
+                # is_labelled=model_data.data["is_labelled"],
+                # savings=model_data.y_savings,
+                preds_savings=model_data.preds_savings_train_test_model,
+                preds=model_data.preds_train_test_model,
+                **model_data.preds_proba_train_test_model,
+            )
+        )
+        log_table("train_test_predictions.parquet", train_test_df)
+
+    # False negatives are those samples where the negative class has the largest probability
+    # even if the sample was originally positively labelled.
+    # In case of false positive, the opposite happens.
+    # Here, we refer to the identified samples as potential false positives and false
+    # negatives as we simply rank them in terms of class probabilities, without necessarily
+    # checking if the negative or positive classes are those eventually selected at inference
+    # time.
+    df_potential_false_negs = _rank_potential_false_negatives(df)
+    df_potential_false_pos = _rank_potential_false_positives(df)
+    log_table("false_negatives.csv", df_potential_false_negs)
+    log_table("false_positives.csv", df_potential_false_pos)
+
+
+def load_full_predictions(mlflow_run: mlflow.entities.Run) -> pd.DataFrame:
+    """Loads the predictions for the entire dataset from the given run into a dataframe.
+
+    Parameters
+    ----------
+    mlflow_run : mlflow.entities.Run
+        The run whose predictions will be loaded
+
+    Returns
+    -------
+    pd.DataFrame
+        A dataframe containing the predictions of the model for the given run.
+    """
+    artifact_path = urlparse(mlflow_run.info.artifact_uri).path
+    return pd.read_parquet(Path(artifact_path) / "full_predictions.parquet")
+
+
+def load_model_config(mlflow_run: mlflow.entities.Run) -> dict[str, Any]:
+    """Loads the model config from the config.yaml file in the mlflow run
+
+    Parameters
+    ----------
+    mlflow_run : mlflow.entities.Run
+        The run to be loaded from
+
+    Returns
+    -------
+    Dict[str, Any]
+        The model config of the run
+    """
+    artifact_path = urlparse(mlflow_run.info.artifact_uri).path
+    yaml_path = Path(artifact_path) / "config.yaml"
+    with open(yaml_path) as file:
+        try:
+            config_dict = yaml.safe_load(file)
+        except yaml.YAMLError as e:
+            print(f"Error reading YAML file: {e}")
+    return config_dict
+
+
+def log_classifier_metrics(model_data: ModelData) -> None:
+    """Logs the model performance metrics (bias, logloss, precision) of the classifier in training and testing datasets to mlflow
+
+    Parameters
+    ----------
+    model_data : ModelData
+        Includes all the data and predictions required to log metrics
+    """
+    df = pd.DataFrame(
+        {
+            "y_class": model_data.y_class,
+            "train_test": model_data.sample,
+            **model_data.preds_proba_train_test_model,
+        }
+    )
+    for sample, df_sample in df.groupby("train_test"):
+        # Adapting scores to support multiclass and binary classification.
+        if model_data.num_classes == 2:
+            # Only extracting the prediction over the positive class.
+            y_score = df_sample["proba_1"]  # pd.Series
+        else:
+            # Considering the predicted probabilities over all classes.
+            # Looping over class indices to avoid problems due to ordering.
+            y_score = df_sample[
+                [f"proba_{class_idx}" for class_idx in range(model_data.num_classes)]
+            ]  # pd.DataFrame
+
+        ####### BIAS COMPUTATION. ################
+        # In case of binary classification, BIAS is computed as the scaled
+        # empirical average difference between the predicted and true
+        # probability.
+        # If working with multiple classes, the 'One-vs-Rest' approach is leveraged,
+        # considering at each time one class as the positive one, and the others
+        # as all part of the same negative class.
+        if model_data.num_classes == 2:
+            # y_class contains binary values.
+            mlflow.log_metric(
+                f"CLS_BIAS_{sample}",
+                df_sample["proba_1"].mean() / max(df_sample["y_class"].mean(), EPS) - 1,
+            )
+        else:
+            # 'One-vs-Rest' approach is leveraged, therefore mimicking the
+            # binarized case changing the positive class each time.
+            for class_idx in range(1, model_data.num_classes):
+                y_class_temp = (df_sample["y_class"] == class_idx).astype(int)
+                mlflow.log_metric(
+                    f"CLS_BIAS_class_{class_idx}_{sample}",
+                    df_sample[f"proba_{class_idx}"].mean()
+                    / max(y_class_temp.mean(), EPS)
+                    - 1,
+                )
+
+        ####### ROC CURVE COMPUTATION. ################
+        # Use the one-versus-rest approach without aggregation over classes.
+        # Metrics for all classes are then reported directly accessing the dictionary.
+        roc_scores = roc_auc_score(
+            df_sample["y_class"],
+            y_score,
+            multi_class="ovr",
+            average=None,
+        )
+        if isinstance(roc_scores, float):
+            mlflow.log_metric(
+                f"AUC_{sample}",
+                roc_scores,
+            )
+        else:
+            for class_idx, score in enumerate(roc_scores):  # type: ignore
+                mlflow.log_metric(
+                    f"AUC_{class_idx}_{sample}",
+                    score,
+                )
+        ####### LOG LOSS COMPUTATION. ################
+        # It does not need to be adapted to the multiclass setting as
+        # it already supports it.
+        mlflow.log_metric(
+            f"LogLoss_{sample}",
+            log_loss(df_sample["y_class"], y_score),
+        )
+
+        ####### AVERAGE PRECISION COMPUTATION. ################
+
+        average_precision_scores = average_precision_score(
+            y_true=df_sample["y_class"],
+            y_score=y_score,
+            average=None,
+        )
+        if isinstance(average_precision_scores, float):
+            mlflow.log_metric(
+                f"Average_Precision_{sample}",
+                -average_precision_scores,
+            )
+        else:
+            for class_idx, score in average_precision_scores:  # type: ignore
+                mlflow.log_metric(
+                    f"Average_Precision_{class_idx}_{sample}",
+                    -score,
+                )
+
+
+def log_regression_metrics(model_data: ModelData) -> None:
+    """
+    Logs the model performance metrics (bias, rmse, ...) of the expected savings in training and testing datasets to mlflow.
+
+    Among the metrics that are logged, only bias offers useful insights to
+    detect how imputation affects the training quality.
+
+    Parameters
+    ----------
+    model_data : ModelData
+        Includes all the data and predictions required to log metrics
+    """
+    # TODO: check out the available metrics tables
+
+    # Regression metrics are computed both considering
+    # estimated expected savings (combining predictions from
+    # classifier and savings model) and conditional savings model predictions.
+    # In the first setting, labelled samples are considered, in
+    # order to quantify bias due to target imputation when training.
+    # When considering savings point estimates, only positively
+    # labelled data with savings greater than zero
+    # are considered, to properly evaluate and measure the
+    # goodness of the savings training procedure.
+    df = pd.DataFrame(
+        {
+            "preds": model_data.preds_train_test_model,  # estimated expected savings
+            "preds_savings": model_data.preds_savings_train_test_model,  # savings point estimates
+            "y": model_data.y_savings,
+            "train_test": model_data.sample,
+            "is_labelled": model_data.data.is_labelled,
+            **model_data.preds_proba_train_test_model,  # defining a column for each class.
+        }
+    )
+    for sample, df_sample in df.groupby("train_test"):
+
+        # Computing metrics on expected savings, only considering
+        # labelled samples (even those negatively labelled).
+        labelled_df_sample = df_sample.query("is_labelled == 1")
+        mlflow.log_metric(
+            f"BIAS_{sample}_expected_savings",
+            labelled_df_sample["preds"].mean() / labelled_df_sample["y"].mean() - 1,
+        )
+        mlflow.log_metric(
+            f"MSE_{sample}_expected_savings",
+            mean_squared_error(labelled_df_sample["y"], labelled_df_sample["preds"]),
+        )
+        mlflow.log_metric(
+            f"MAE_{sample}_expected_savings",
+            mean_absolute_error(labelled_df_sample["y"], labelled_df_sample["preds"]),
+        )
+        mlflow.log_metric(
+            f"MAPE_{sample}_expected_savings",
+            mean_absolute_percentage_error(
+                labelled_df_sample["y"], labelled_df_sample["preds"]
+            ),
+        )
+
+        # Computing metrics on conditional savings model predictions, only
+        # considering positively labelled samples, i.e. those havings savings
+        # values larger than 0.
+        pos_labelled_df_sample = df_sample.query("is_labelled == 1 and y > 0")
+        mlflow.log_metric(
+            f"BIAS_{sample}_on_labelled_savings",
+            pos_labelled_df_sample["preds_savings"].mean()
+            / pos_labelled_df_sample["y"].mean()
+            - 1,
+        )
+        mlflow.log_metric(
+            f"MSE_{sample}_on_labelled_savings",
+            mean_squared_error(
+                pos_labelled_df_sample["y"], pos_labelled_df_sample["preds_savings"]
+            ),
+        )
+        mlflow.log_metric(
+            f"MAE_{sample}_on_labelled_savings",
+            mean_absolute_error(
+                pos_labelled_df_sample["y"], pos_labelled_df_sample["preds_savings"]
+            ),
+        )
+        mlflow.log_metric(
+            f"MAPE_{sample}_on_labelled_savings",
+            mean_absolute_percentage_error(
+                pos_labelled_df_sample["y"], pos_labelled_df_sample["preds_savings"]
+            ),
+        )
+
+        # As positive classes are aggregated before computing the expected savings,
+        # probabilities over positive classes need to be aggregated as well.
+        df_sample["preds_proba_positive_classes"] = (
+            1 - df_sample["proba_0"]
+        )  # assuming classes are mutually exclusive.
+        if (
+            df_sample["preds_proba_positive_classes"].var() > 0
+            and df_sample["preds"].var() > 0
+        ):
+            mlflow.log_metric(
+                f"Spearman_correlation_pos_proba_vs_regression_{sample}_labelled",
+                spearmanr(
+                    df_sample["preds_proba_positive_classes"],
+                    df_sample["preds"],
+                )[0],
+            )
+
+
+def log_train_val_test_metrics(model_data: ModelData, cfg: DictConfig) -> None:
+    """Logs the model performance metrics (bias, logloss, precision) on the different
+    data splits. In our experiment, the same classifier is trained both on train data only or
+    on all samples. While the latter instance of the model is used to compute predictions
+    needed to generate stichprobe, the former model instance is the one evaluated in the
+    following method. Therefore, predicted probabilities after training only on train data
+    are considered, and they are split into the corresponding groups before computing the metrics.
+    Available splits depend on the classifier model which is trained:
+
+        - Bert variants: the model is trained on the train split, evaluated during training on
+                         validation data, and eventually queried on all samples, including
+                         test ones, to compute metrics on all the splits.
+                         Therefore, train / val / test indices are available in the
+                         ModelData objects.
+
+        - Dummy: only train and test splits are available. The model is trained on
+                      train samples. The model is eventually queried on all samples, including test ones,
+                      so that metrics for both splits can be computed. Therefore, only
+                      train / test indices are available.
+
+        - LGBM- Only: only train and test splits are available. The model is trained on
+                      train samples, after an initial hyperparameters tuning procedure
+                      carried out performing K-fold cross validation on the train data.
+                      The model is eventually queried on all samples, including test ones,
+                      so that metrics for both splits can be computed. Therefore, only
+                      train / test indices are available.
+
+        - Cross Fitter (Bert + LGBM): only train and test splits are available. The reasoning
+                                      is the same as in the LGBM-only classifier. The only difference
+                                      lies in the fact that train samples are also used to train
+                                      the Bert model instances needed to compute the bert scores
+                                      given as additional features to the LGBM classifier. Metrics
+                                      related to Bert predictions are logged at train time and are not
+                                      part of this method.
+
+    This method has to be preferred over log_classifier_metrics in order to avoid collapsing
+    train and validation data together when computing metrics (as assignement to splits is
+    performed looking at model_data.trains and model_data.tests in that method, which do not
+    consider additional train / val / test split procedures.)
+
+    Parameters
+    ----------
+    model_data : ModelData
+        Includes all the data and predictions required to log metrics, as well as indices required to map samples to the splits they belong to.
+    """
+
+    has_val_index = getattr(model_data, "val_index", None)
+    model_type = cfg.tuning_parameters
+    if has_val_index is None and model_type == "bert":
+        # Indices for validation splits are currently only available when using
+        # a Bert-only classifier (no dummy, no cross-fitter + LGBM, no LGBM).
+        # Therefore, if model_type == "bert", indices have not been saved
+        # correctly, and an error is raised.
+        raise ValueError(
+            "A Bert-only classifier was trained but no validation indices have been saved."
+        )
+
+    df = pd.DataFrame(
+        {
+            "y_class": model_data.y_class,
+            **model_data.preds_proba_train_test_model,  # computed by querying the model only trained on train samples, not the one with access to all datapoints.
+        }
+    )
+    modes = {
+        "train": model_data.train_index,
+        "val": getattr(model_data, "val_index", None),
+        "test": model_data.test_index,
+    }
+    # In case of multiclass classification, per-class metrics are reported.
+    # In addition, for each metric, an aggregated value is computed after
+    # binarizing the problem and collapsing all non negative-classes to a
+    # single positive class.
+    for sample, index in modes.items():
+
+        if index is None:
+            # No operation is performed as the current split has not been defined.
+            continue
+
+        df_sample = df.loc[index]
+
+        # Adapting scores to support multiclass and binary classification.
+        y_true_binarized = y_score_binarized = None
+
+        # Binary classification: only extracting the prediction over the positive class.
+        if model_data.num_classes == 2:
+            y_score = df_sample["proba_1"]  # pd.Series
+
+        # Multiclass classification: considering probs over all classes
+        # and defining binarized ground truth labels and predictions.
+        else:
+            y_score = df_sample[
+                [f"proba_{class_idx}" for class_idx in range(model_data.num_classes)]
+            ]  # pd.DataFrame
+
+            # When binarizing the problem, positive ground truth labels
+            # are collapsed to the same positive class.
+            y_true_binarized = (df_sample["y_class"] != 0).astype(int)
+            # When binarizing the problem, scores are computed as 1 - proba_0.
+            # This represents the confidence of the model in not assigning a sample
+            # to the negative class.
+            y_score_binarized = 1 - y_score["proba_0"]
+
+        ####### BIAS COMPUTATION. ################
+        # In case of binary classification, BIAS is computed as the scaled
+        # empirical average difference between the predicted and true
+        # probability.
+        # If working with multiple classes, the 'One-vs-Rest' approach is leveraged,
+        # considering at each time one class as the positive one, and the others
+        # as all part of the same negative class.
+        if model_data.num_classes == 2:
+            # y_class contains binary values.
+            mlflow.log_metric(
+                f"CLS_BIAS/{sample}",
+                df_sample["proba_1"].mean() / max(df_sample["y_class"].mean(), EPS) - 1,
+            )
+        else:
+            # 'One-vs-Rest' approach is leveraged, therefore mimicking the
+            # binarized case changing the positive class each time.
+            for class_idx in range(1, model_data.num_classes):
+                y_class_temp = (df_sample["y_class"] == class_idx).astype(int)
+                mlflow.log_metric(
+                    f"CLS_BIAS/class_{class_idx}_{sample}",
+                    df_sample[f"proba_{class_idx}"].mean()
+                    / max(y_class_temp.mean(), EPS)
+                    - 1,
+                )
+
+            # Computing and logging the aggregated metric value (binarized problem).
+            mlflow.log_metric(
+                f"CLS_BIAS/{sample}",
+                np.mean(y_score_binarized) / max(np.mean(y_true_binarized), EPS) - 1,
+            )
+
+        ####### ROC CURVE COMPUTATION. ################
+        # Use the one-versus-rest approach without aggregation over classes.
+        # Metrics for all classes are then reported directly accessing the dictionary.
+        roc_scores = roc_auc_score(
+            df_sample["y_class"],
+            y_score,
+            multi_class="ovr",
+            average=None,
+        )
+        if isinstance(roc_scores, float):
+            mlflow.log_metric(
+                f"AUC/{sample}",
+                roc_scores,
+            )
+        else:
+            for class_idx, score in enumerate(roc_scores):  # type: ignore
+                mlflow.log_metric(
+                    f"AUC/class_{class_idx}_{sample}",
+                    score,
+                )
+
+            # Computing and logging the aggregated metric value (binarized problem).
+            binarized_roc_score = roc_auc_score(
+                y_true_binarized,
+                y_score_binarized,
+            )
+            mlflow.log_metric(
+                f"AUC/{sample}",
+                binarized_roc_score,
+            )
+
+        ####### LOG LOSS COMPUTATION. ################
+        # It does not to be adapted to the multiclass setting as
+        # it already supports it.
+        mlflow.log_metric(
+            f"LogLoss/{sample}",
+            log_loss(df_sample["y_class"], y_score),
+        )
+
+        ####### AVERAGE PRECISION COMPUTATION. ################
+
+        average_precision_scores = average_precision_score(
+            y_true=df_sample["y_class"],
+            y_score=y_score,
+            average=None,
+        )
+        if isinstance(average_precision_scores, float):
+            mlflow.log_metric(
+                f"Average_Precision/{sample}",
+                average_precision_scores,
+            )
+        else:
+            for class_idx, score in enumerate(average_precision_scores):  # type: ignore
+                mlflow.log_metric(
+                    f"Average_Precision/class_{class_idx}_{sample}",
+                    score,
+                )
+                binarized_average_precision_score = average_precision_score(
+                    y_true=y_true_binarized,
+                    y_score=y_score_binarized,
+                )
+                mlflow.log_metric(
+                    f"Average_Precision/{sample}",
+                    binarized_average_precision_score,
+                )
+
+
+def log_config_json(modeldata: ModelData):
+    pass
+    # TODO to be implemented once pipedag extension is merged
+    # with tempfile.TemporaryDirectory() as tmpdirname:
+    #     filename = 'config.json'
+    #     file_path = os.path.join(tmpdirname, filename)
+
+
+def log_table_shape(model_data: ModelData):
+
+    mlflow.log_param(
+        "Full Data Shape",
+        model_data.X.shape,
+    )
+
+    mlflow.log_param(
+        "Training Data Shape",
+        model_data.X[model_data.trains].shape,
+    )
+
+    mlflow.log_param(
+        "Testing Data Shape",
+        model_data.X[model_data.tests].shape,
+    )
+
+
+def log_output(cfg: DictConfig, file_name: str):
+    config_path = os.path.join(cfg.paths.output_dir, file_name)
+    mlflow.log_artifact(config_path)
+
+
+def log_data_version_for_connection(cfg: DictConfig) -> None:
+    """
+    Function that logs which mlflow data version is used including name of run, description and date in which the run was made
+    """
+    data_run_id = cfg["regress_data_pipeline_run_id"]
+    client = mlflow.tracking.MlflowClient()
+    run = client.get_run(data_run_id)
+
+    run_name = run.data.tags.get("mlflow.runName", "Unnamed run")
+    run_description = run.data.tags.get("mlflow.note.content", "No description")
+
+    run_date = run.data.params["date"]
+
+    mlflow.log_param("Data Version Run Name", run_name)
+    mlflow.log_param("Data Version Run Description", run_description)
+    mlflow.log_param("Data Version Run Date", run_date)
+
+
+# bert
+def log_bert_run_mlflow(
+    cfg: DictConfig,
+    model_data: ModelData,
+    best_model: BertForSequenceClassification,
+    one_hot_encoder: ColumnTransformer,
+    metrics_evolution: list[dict[str, Any]] | None,
+    tokenization_analysis: TokenizationAnalysis | None,
+    df_stichprobe: pd.DataFrame,
+) -> None:
+    """Logs the bert run to mlflow.
+
+    Parameters
+    ----------
+    cfg : DictConfig
+        The model config file
+    model_data : ModelData
+        The ModelData including full predictions, and metrics
+    best_model : BertForSequenceClassification
+        The model that performed best on the validation set
+    one_hot_encoder : ColumnTransformer
+        The column transformer used to one-hot encode all categoricals.
+    metrics_evolution : list[dict[str, Any]] | None
+        Describes evolution of train and val metrics over evaluation steps
+    tokenization_analysis : TokenizationAnalysis
+    df_stichprobe : pd.DataFrame
+        Set of samples for the SC-Stichprobe
+    """
+
+    # newer versions of mlflow would support transformer
+    if cfg["log_model_mlflow"]:
+        make_model_contiguous(best_model)
+        best_model.save_pretrained("best_model")
+        mlflow.log_artifact("best_model")
+        mlflow.sklearn.log_model(one_hot_encoder, "one_hot_encoder")
+    log_metrics_evolution(metrics_evolution)  # type: ignore
+    if (
+        cfg["tuning_parameters"]["tokenization_analysis"]
+        and tokenization_analysis is not None
+    ):
+        log_tokenization_analysis(tokenization_analysis)
+
+
+def log_run_mlflow_general(
+    cfg: DictConfig,
+    model_data: ModelData,
+    df_stichprobe: pd.DataFrame,
+) -> None:
+    """Logs the none model specific part of the run to mlflow.
+    IMPORTANT: not call this before specific logs closes mlflow run.
+
+    Parameters
+    ----------
+    cfg : DictConfig
+        The model config file
+    model_data : ModelData
+        The ModelData including full predictions, and metrics
+    df_stichprobe : pd.DataFrame
+        Set of samples for the SC-Stichprobe
+    """
+    log_full_predictions(model_data, cfg)
+    log_table("flat_data.parquet", model_data.data)
+    log_table("df_stichprobe.csv", df_stichprobe)
+    if cfg.get("write2excel", False):
+        # assign always returns a new dataframe
+        log_table(
+            "stichprobe.xlsx",
+            df_stichprobe.assign(run_id=mlflow.active_run().info.run_id),
+        )
+    # TODO: log explanations for the stichprobe
+    log_table_shape(model_data)
+    # Even when working with endogenous features, dtypes do not change.
+    mlflow.log_param(
+        "classification_vars_with_dtypes",
+        {idx: f"{model_data.X.dtypes[idx]}" for idx in model_data.X.dtypes.index},
+    )  # TODO: Replace this with expected dtypes in the config and assert those
+    # log_classifier_metrics(model_data) # deprecated as same information is logged in log_train_val_test_metrics method.
+    log_train_val_test_metrics(model_data, cfg)
+    log_model_plots(
+        model_data, is_savings_run=cfg.get("savings_model_type", None) is not None
+    )
+    if cfg["savings_model_type"] is not None:
+        log_regression_metrics(model_data)
+
+    if cfg["masked_positive_samples"]:
+        log_masked_positives_performance(model_data)
+    log_output(cfg, ".hydra/config.yaml")
+    log_code()
+    log_data_version_for_connection(cfg)
+
+
+def log_tokenization_analysis(tokenization_analysis: TokenizationAnalysis):
+    """Logs a TokenizationAnalysis object containing important information about the performance of the BertTokenizer on the entire dataset.
+
+    Parameters
+    ----------
+    tokenization_analysis : TokenizationAnalysis
+        Object containing information on how many samples exceed context window max size and more.
+    """
+    mlflow.log_metric(
+        "n_texts_exceed_max_length", float(tokenization_analysis.n_too_long)
+    )
+    mlflow.log_metric("share_of_UNK_tokens", tokenization_analysis.avg_share_unknown)
+    df_above_maxlenght = pd.DataFrame(
+        {
+            "index": tokenization_analysis.indices,
+            "full_text_description": tokenization_analysis.descriptions,
+            "n_tokens": tokenization_analysis.lengths_too_long,
+            "label": tokenization_analysis.labels_too_long,
+        }
+    )
+    df_above_maxlenght.to_csv("oversized_samples.csv")
+    mlflow.log_artifact("oversized_samples.csv")
+    plt.clf()
+    plt.hist(
+        tokenization_analysis.lengths,
+        bins=range(1, max(tokenization_analysis.lengths) + 2),
+        edgecolor="black",
+    )
+    plt.title("Token Lengths")
+    plt.xlabel("#tokens in text")
+    plt.ylabel("Frequency")
+    fig = plt.gcf()
+    log_fig(fig, "n_tokens_distr.png")
+
+
+def log_metrics_evolution(metrics_evolution: list[dict[str, Any]]) -> None:
+    """Saves information about the evolution of the training and validation loss during fine-tuning to MLFlow.
+
+    Parameters
+    ----------
+    metrics_evolution
+        A dataframe including eval step, epoch, train, and validation loss.
+    """
+    # loss evolution
+    if metrics_evolution:
+        df = pd.DataFrame(metrics_evolution).set_index("validation_step")
+        df.to_csv("metrics_evolution.csv")
+        mlflow.log_artifact("metrics_evolution.csv")
+        fig, ax = plt.subplots(1, 1)
+        df[["training_loss", "validation_loss"]].plot(ax=ax)
+        fig = plt.gcf()
+        log_fig(fig, "fine_tuning_loss_evolution.png")
+
+
+def load_bert_model(mlflow_run: mlflow.entities.Run) -> BertForSequenceClassification:
+    """Loads the best model from the passed run.
+
+    Parameters
+    ----------
+    mlflow_run : mlflow.entities.Run
+        The run for which the best model is to be retrieved.
+
+    Returns
+    -------
+    BertForSequenceClassification
+        The best model from the run.
+    """
+    artifact_path = urlparse(mlflow_run.info.artifact_uri).path
+    return BertForSequenceClassification.from_pretrained(
+        Path(artifact_path) / "best_model"
+    )
+
+
+def get_tuned_run(
+    cfg: DictConfig, run_id_key: str = "load_from_mlflow_run_id"
+) -> mlflow.entities.Run | None:
+    """Load mlflow run if load_from_mlflow_run_id in config otherwise returns None.
+
+    Warns if data versions are not the same.
+
+    Parameters
+    ----------
+    cfg : DictConfig
+        hydra loaded config
+    run_id_key: str
+        The key in the cfg to get the previous run_id
+
+    Returns
+    -------
+    mlflow.entities.Run
+        mlflow run
+    """
+    previous_mlflow_run_id = cfg.get(run_id_key, None)
+
+    if previous_mlflow_run_id is None:
+        return None
+
+    logger.info(f"Get previous mlflow run'{previous_mlflow_run_id}'")
+    previous_mlflow_run: Any = load_mlflow_run(previous_mlflow_run_id)
+    cfg_tuned = load_model_config(previous_mlflow_run)
+    if cfg["regress_data_pipeline_run_id"] != cfg_tuned["regress_data_pipeline_run_id"]:
+        logger.warning(
+            "Note: Data Version of tuned parameter is different to the used data version!"
+        )
+
+    if cfg["classification_vars"] != cfg_tuned["classification_vars"]:
+        logger.warning("Note: Classification vars are not the same!")
+
+    return previous_mlflow_run
+
+
+def get_ckpt(tuned_run: mlflow.entities.Run) -> str:
+    """
+    Path should look like this:
+    `.../artifacts/model/checkpoints/epoch_000/epoch_000.ckpt`
+
+    Note: If there are more checkpoints saved in the future to mlflow need a better logic.
+
+    Parameters:
+    - tuned_run: mlflow.entities.Run
+        mlflow run
+
+    Returns:
+    string with of checkpoint path
+    """
+    run_path = urlparse(tuned_run.info.artifact_uri).path
+    artifact_path = os.path.join(run_path, "model/checkpoints/")
+    checkpoints = os.listdir(artifact_path)
+    assert len(checkpoints) == 1, "there should only be a single checkpoint for now"
+    checkpoint_dir = os.path.join(artifact_path, checkpoints[0])
+
+    # there is some meta data also in the folder
+    ckpt_paths = [p for p in os.listdir(checkpoint_dir) if p.endswith(".ckpt")]
+    assert len(ckpt_paths) == 1, f"check the ckpt files {ckpt_paths}"
+    ckpt_path = ckpt_paths[0]
+    return ckpt_path
+
+
+def load_one_hot_encoder(mlflow_run: mlflow.entities.Run) -> ColumnTransformer:
+    """Loads the one_hot encoder from the provided run id.
+
+    Parameters
+    ----------
+    mlflow_run : mlflow.entities.Run
+        The past run to be loaded
+
+    Returns
+    -------
+    ColumnTransformer
+        The one-hot encoder used in the past run (already fitted).
+    """
+    artifact_path = urlparse(mlflow_run.info.artifact_uri).path
+    return mlflow.sklearn.load_model(Path(artifact_path) / "one_hot_encoder")
+
+
+# gbdt
+def log_gbdt_run_mlflow(
+    cfg: DictConfig,
+    model_data: ModelData,
+    study: optuna.Study | dict[str, Any],
+    train_test_pipeline: Pipeline,
+    pipeline_df: pd.DataFrame,
+    full_pipeline: Pipeline,
+) -> None:
+    """Logs the run of the lgbm model to mlflow including best parameters, predictions, shapley values, metrics, plots, and optuna study info
+
+    Parameters
+    ----------
+    cfg : DictConfig
+        Model config to be logged
+    model_data : ModelData
+        Includes data and predictions for logging
+    study : optuna.Study | dict[str, Any]
+        The study containing the trials of hyperparameter tuning
+    train_test_pipeline : Pipeline
+        Preprocessor plus model
+    pipeline_df : pd.DataFrame
+        Df containing features and predictions used for shapley logging
+    full_pipeline : Pipeline
+        Pipeline for the model trained on all data
+    df_stichprobe : pd.DataFrame
+        Set of samples for the SC-Stichprobe
+    """
+    # TODO: remove, only kept to compare what is logged and where
+    pass
+    # if cfg["use_bert_scoring"]:
+    #     log_bert_crossfitted_scores(model_data)
+
+    # if cfg["log_model_mlflow"]:
+    # Logging models trained on both train-only or all samples.
+    # For future custom evaluation or inspection, the fullmodel should
+    # be considered, as it is the one generating the predictions used
+    # for the stichprobe generation.
+    #    mlflow.sklearn.log_model(train_test_pipeline, "trained_models/train_test")
+    #    mlflow.sklearn.log_model(full_pipeline, "trained_models/fullmodel")
+    # log_shapley_metrics(train_test_pipeline, pipeline_df[model_data.tests])
+    # if isinstance(study, optuna.Study):
+    #     log_study_info(study)
+    #     log_optuna_plots(study)
+
+    # this option is not provided anymore. We don't want to load a study from a mlflow run that where the study was only loaded
+    # elif isinstance(study, dict):
+    #     df = pd.json_normalize(study, sep="_")
+    #     d_flat = df.to_dict(orient="records")[0]
+    #     for key, value in d_flat.items():
+    #         mlflow.log_param(key, value)
+
+
+def log_study_info(study: optuna.Study, prefix: str = "") -> None:
+    """Logs basic optuna study metrics to mlflow
+
+    Parameters
+    ----------
+    study : optuna.Study
+        The optuna study describing the lgbm hyperparameter tuning
+    """
+    # limitation mlflow can not search over a deep dict
+    log_dict = (
+        {
+            f"{prefix}study_number_of_trials": len(study.trials),
+            f"{prefix}study_best_objective": study.best_value,
+        }
+        | {
+            f"{prefix}study_best_trial_params_{key}": value
+            for key, value in study.best_trial.params.items()
+        }
+        | {
+            f"{prefix}study_best_trial_user_attrs_{key}": value
+            for key, value in study.best_trial.user_attrs.items()
+        }
+    )
+    # limitation mlflow can log_params transforms to string which can max be len(250)
+    for key, value in log_dict.items():
+        mlflow.log_param(key, value)
+
+
+def log_optuna_plots(study: optuna.Study) -> None:
+    """Logs the hyperparameter importance and optimization history plots from optuna to mlflow
+
+    Parameters
+    ----------
+    study : optuna.Study
+        The optuna study describing the hyperparameter tuning
+    """
+    try:
+        # get matplotlib fig directly avoids saving to disk with plotly
+        fig = optuna.visualization.matplotlib.plot_param_importances(study).get_figure()
+        fig.tight_layout()
+        log_fig(fig, "optuna_importances.png")
+
+        fig = optuna.visualization.matplotlib.plot_optimization_history(
+            study
+        ).get_figure()
+        fig.tight_layout()
+        log_fig(fig, "optuna_optimization_history.png")
+    except RuntimeError as e:
+        # Necessary for running through smoke test
+        logger.warning(f"Error occured: {e}")
+
+
+def log_shapley_metrics(full_model: Pipeline, pipeline_df: pd.DataFrame) -> None:
+    """
+    Logs the shapley plots for lgbm to mlflow
+    In case of binary classification, scores for positive class
+    are the opposite of the negative class, as they cancel out.
+    The shap library automatically returns scores for one class only
+    and allows easier visualization.
+
+    In case of multiclass classification, scores for each class
+    are computed. As we are interested in understanding how each feature
+    affects the model confidence rather than its precision in distinguishing
+    among positive classes, it is enough to plot score referring to
+    the negative class, as this would represent how much the model
+    is guided towards returning 0 as output class.
+
+    Parameters
+    ----------
+    full_model : Pipeline
+        The pipeline containing the model
+    pipeline_df : pd.DataFrame
+        The model data
+    """
+    n_classes = full_model[-1].n_classes_
+    # TODO: try to use the more general shap.Explainer with custom defined
+    # masking object in order to mimick the interventional shap computation
+    # performed by TreeExplainer when provided with background data.
+    transformed_df = full_model[:-1].transform(pipeline_df)
+    explainer = shap.TreeExplainer(full_model[-1])  # tree-depedent shap.
+    shap_values = explainer(transformed_df)
+
+    # In case of multiclass classification, only scores referring to
+    # the negative class are considered and their sign is flipped.
+    # This way, we monitor the impact of each feature in increasing the
+    # likelihood of positive classes (actually, decreasing the logits for
+    # the negative class).
+    if n_classes > 2:
+        shap_values = shap_values[:, :, 0]  # (n_samples, n_features), as in binary case
+        shap_values.values = -shap_values.values
+        shap_values.base_values = (
+            -shap_values.base_values
+        )  # base_values w.r.t. which the feature contribution is computed
+
+    fig, ax = plt.subplots()
+    fig = shap.summary_plot(shap_values, transformed_df, show=False)
+    fig = plt.gcf()
+    log_fig(fig, image_name="shap_summary.png")
+
+    fig, ax = plt.subplots()
+    fig = shap.summary_plot(shap_values, transformed_df, plot_type="bar", show=False)
+    fig = plt.gcf()
+    log_fig(fig, image_name="shap_summary_bar.png")
+
+
+# distribution of percentiles
+def log_distribution_of_masked_predictions(
+    df_set: pd.DataFrame,
+    set_name: str,
+):
+    """_summary_
+
+    Parameters
+    ----------
+    df_set : pd.DataFrame
+        _description_
+    set_name : str
+        _description_
+    """
+    df_set["percentile"] = df_set["preds_train_test"].rank(pct=True) * 100
+    df_masked_positives = df_set.query("is_masked_train").copy()
+    avg_percentile = df_masked_positives["percentile"].mean()
+    min_percentile = df_masked_positives["percentile"].min()
+    max_percentile = df_masked_positives["percentile"].max()
+    mlflow.log_metric(f"{set_name}_percentile_mean", avg_percentile)
+    mlflow.log_metric(f"{set_name}_percentile_min", min_percentile)
+    mlflow.log_metric(f"{set_name}_percentile_max", max_percentile)
+    log_table(f"{set_name}_scores.parquet", df_masked_positives)
+
+    fig = plot_masked_score_distribution(
+        df_masked_positives=df_masked_positives,
+        avg_percentile=avg_percentile,
+        set_name=set_name,
+    )
+    log_fig(fig, f"{set_name}_percentiles.png")
+
+
+----- src/hf4_regress_exploration/model/steps/mlflow_plotting_functions.py -----
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import seaborn as sns
+from matplotlib.axes import Axes
+from matplotlib.figure import Figure as Fig
+from sklearn.metrics import (
+    auc,
+    average_precision_score,
+    precision_recall_curve,
+    roc_curve,
+)
+
+from hf4_regress_exploration.model.steps.helper_classes import ModelData
+from hf4_regress_exploration.utils.counterfactual_plotting import (
+    get_counterfactual_curves,
+)
+
+
+def plot_masked_score_distribution(
+    df_masked_positives: pd.DataFrame,
+    avg_percentile: float,
+    set_name: str,
+):
+    """
+    This function plots the distribution of the rank of the model score (normalized to [0, 1])
+    for regress-probability as provided in `df_masked_positives`.
+
+
+    Parameters
+    ----------
+    df_masked_positives : Contains the column `percentile` of which this function plots the distribution and the avg value
+    avg_percentile : The x-value of the solid vertical line.
+    set_name : Description of the set, over which the model-scores were ranked (goes into the filename)
+    """
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.hist(
+        df_masked_positives["percentile"],
+        bins=10,
+        alpha=0.7,
+        color="blue",
+        edgecolor="black",
+    )
+    ax.axvline(avg_percentile, color="red", linestyle="dashed", linewidth=2)
+    ax.set_xlabel("prediction percentile")
+    ax.set_ylabel("frequency")
+    ax.text(
+        avg_percentile,
+        plt.ylim()[1] * 0.9,
+        f"Mean: {avg_percentile:.2f}",
+        color="red",
+        fontsize=12,
+    )
+    fig.tight_layout()
+    return fig
+
+
+def roc_plot(
+    df_plot: pd.DataFrame,
+    ax: Axes,
+    title: str,
+    proba_colname: str,
+    y: str = "curr_class",
+):
+    """
+    Plot function for the ROC curve
+
+    Parameters
+    ----------
+    df_plot : Contains the data required to plot the ROC curve
+    ax : matplotlib Axes to draw the plot
+    title : title of the plot
+    y : column-name of the true binary class
+    proba_colname : column-name of proba
+    """
+    fpr, tpr, _ = roc_curve(df_plot[y], df_plot[proba_colname])
+    area_under_curve = auc(fpr, tpr)
+
+    ax.plot(fpr, tpr, label=f"AUC={round(area_under_curve, 3)}", lw=2)
+    ax.plot([0, 1], [0, 1], "k--", lw=1)
+    ax.set_title(title)
+    ax.set_xlabel("FPR")
+    ax.set_ylabel("TPR")
+    ax.legend()
+
+
+def pr_plot(
+    df_plot: pd.DataFrame,
+    ax: Axes,
+    title: str,
+    proba_colname: str,
+    y: str = "curr_class",
+):
+    """
+    Plot function for the Precision-Recall curve
+
+    Parameters
+    ----------
+    df_plot : Contains the data required to plot the PR curve
+    ax : matplotlib Axes to draw the plot
+    title : title of the plot
+    y : column-name of the true binary class
+    proba_colname : column-name of proba
+    """
+    precision, recall, _ = precision_recall_curve(df_plot[y], df_plot[proba_colname])
+    avg_precision = average_precision_score(df_plot[y], df_plot[proba_colname])
+
+    ax.plot(
+        recall,
+        precision,
+        label=f"Precision-Recall curve (AP={round(avg_precision, 3)})",
+        lw=2,
+    )
+    ax.set_title(title)
+    ax.set_xlabel("Recall")
+    ax.set_ylabel("Precision")
+    ax.legend()
+
+
+def pred_hist(
+    df_plot: pd.DataFrame,
+    ax: Axes,
+    title: str,
+    proba_colname: str = "preds_proba",
+):
+    class_idx = int(proba_colname.split("_")[-1])
+    if class_idx != 0:
+        x_axis_name_filler = rf"y={class_idx}"
+    else:
+        x_axis_name_filler = r"y \neq 0"
+    ax.hist(df_plot[proba_colname], bins=np.linspace(0, 1, 25))
+    ax.set_title(title + f" N = {len(df_plot[proba_colname])}")
+    ax.set_xlabel(rf"$\hat P\left({x_axis_name_filler}|X=x\right)$")
+
+
+def plot_cf_curves(model_data: ModelData) -> Fig:
+    """
+    Computes counterfactual curves comparing policies on
+    different outcomes across several threshold levels.
+    """
+
+    # The obtained figure is structured as follows:
+    # -first_row: retrieved labelled samples count across thresholds
+    # -second_row: accumulated savings across thresholds
+    # -third_row: retrieved positively labelled samples across thresholds
+    fig, axes_all = plt.subplots(3, 2, figsize=(10, 10))
+
+    # TODO: extend the code to support multiple predictions on multiple classes.
+    df = pd.DataFrame(
+        {
+            "y_class": (model_data.y_class != 0).astype(
+                int
+            ),  # this allows dealing with both binary and multiclass setting
+            "y_savings": model_data.y_savings,
+            "sample": model_data.sample,
+            "preds_proba": 1
+            - model_data.preds_proba_train_test_model[
+                "proba_0"
+            ],  # aggregating over the positive classes.
+            "is_labelled": model_data.data.is_labelled,  # to compute retrieved labelled samples count as proxy to monitor propensity scores
+        }
+    )
+    scores = ["preds_proba"]
+    # Defining a dictionary to properly define legend
+    # names when not meaningful to the reader.
+    legend_names = {
+        "preds": "pred_expected_savings",
+        "preds_proba": "pred_pos_proba",
+        "is_labelled": "observed_label",
+    }
+    if hasattr(model_data, "preds_train_test_model"):
+        df["preds"] = model_data.preds_train_test_model
+        scores.append("preds")
+
+    # Properly normalizing the plots using the cardinality of
+    # labelled samples.
+    yearly_volume = (
+        len(df) / model_data.data.first_erledigung_date_year.nunique()
+    )  # closing years needed for normalization
+
+    for target, axes in zip(["is_labelled", "y_savings", "y_class"], axes_all):
+        scores_and_target = [target] + scores
+        for tset, ax in zip(["train", "test"], axes):
+            df_tset = df[df["sample"] == tset]
+            # TODO: implement vectorized counterfactual computation
+            # to save runtime
+            cf_data = get_counterfactual_curves(
+                outcome=df_tset[target].to_numpy(dtype=float),
+                scores={
+                    legend_names.get(k, k): v.to_numpy(dtype=float)
+                    for k, v in df_tset[scores_and_target].items()
+                },
+                size_population=yearly_volume,
+            )
+            sns.lineplot(
+                data=cf_data, x="threshold", y="mean", hue="cate_estimator", ax=ax
+            )
+            ax.axhline(cf_data["mean"].iloc[-1], color="black", linestyle="dashed")
+            # TODO: set the xlim to be the moment when the policy based on observed
+            # outcomes reaches the maximum value.
+            ax.set_xlim(0, 0.2 * yearly_volume)  # TODO: Move to config?
+            ax.set_title(tset)
+            xlabel = {
+                "is_labelled": "Yearly Retrieved Labelled Samples Count",
+                "y_savings": "Yearly Savings (EUR)",
+                "y_class": "Yearly Forderungen",
+            }[target]
+            ax.set_ylabel(xlabel)
+            ax.set_xlabel("Yearly inspections")
+
+    fig.suptitle("Counterfactual Curves")
+    fig.tight_layout()
+
+    return fig
+
+
+
+
+---- Load from MLFlow ----
+
+# %% Imports
+import os
+import pandas as pd
+import torch
+import shap
+import matplotlib.pyplot as plt
+from transformers.models.bert.tokenization_bert import BertTokenizer
+from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
+from sklearn.compose import ColumnTransformer
+ 
+from hf4_regress_exploration.model.cross_bert.explainability_utils import (
+    TEXT_COL,
+    collect_predictions_from_df,
+    get_features_from_flat_data,
+    select_case_ids,
+)
+from hf4_regress_exploration.model.data_module import RegressDataModule
+from hf4_regress_exploration.model.lightning_mod import GeneralLitModule
+from hf4_regress_exploration.model.steps.common_funcs import (
+    hash_schadevorgang_id_in_set,
+)
+ 
+# %% Device selection
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
+ 
+# %% Paths
+run_id = "2269faee197b474192c47cc5db840b8c"
+artifact_path = f"/domino/edv/pvc-dprhf403/mlflow/913216485692920709/{run_id}/artifacts/"
+model_path = os.path.join(artifact_path, "model/checkpoints/epoch_002/epoch_002.ckpt")
+flat_data_path = os.path.join(artifact_path, "tables/flat_data.parquet")
+full_pred_path = os.path.join(artifact_path, "tables/full_predictions.parquet")
+ 
+# %% Load model
+lightning_model: GeneralLitModule = GeneralLitModule.load_from_checkpoint(
+    checkpoint_path=model_path,
+    cross_attention_intermediate_size=2048,  # compatibility fix
+)
+lightning_model.to(device)
+lightning_model.eval()
+model = lightning_model.model
+ 
+# %% Load flat_data
+flat_data: pd.DataFrame = pd.read_parquet(flat_data_path)
+ 
+# %% Load predictions and select explanation cases
+full_pred_df, pred_dict = collect_predictions_from_df(
+    full_pred_path,
+    id_col="schadenvorgang_id",
+    label_col="class_label",
+    pred_col="preds",
+    prob_prefix="proba_",
+    is_labelled_col="is_labelled",
+)
+ 
+
+--- Helpers to load from MLFlow ---- 
+
+def collect_predictions_from_df(
+    full_pred_path: str,
+    id_col: str = "schadenvorgang_id",
+    label_col: str = "class_label",
+    pred_col: str = "preds",
+    prob_prefix: str = "prob_",
+    is_labelled_col: str = "is_labeled"
+) -> Tuple[pd.DataFrame, Dict[str, np.ndarray]]:
+    """
+    Load full_predictions.parquet and extract labels, predictions, probs, and IDs.
+ 
+    Assumptions:
+    - `full_predictions.parquet` contains:
+        - a unique ID column (default: schadenvorgang_id)
+        - true labels (default: class_label)
+        - predicted class (default: preds)
+        - per-class probabilities with a common prefix (default: 'prob_')
+          e.g. prob_0, prob_1, prob_2.
+    """
+ 
+    df = pd.read_parquet(full_pred_path)
+ 
+    if id_col not in df.columns:
+        raise KeyError(f"ID column '{id_col}' not found in predictions df.")
+ 
+    if label_col not in df.columns:
+        raise KeyError(f"Label column '{label_col}' not found in predictions df.")
+ 
+    if pred_col not in df.columns:
+        raise KeyError(f"Prediction column '{pred_col}' not found in predictions df.")
+
+    if is_labelled_col not in df.columns:
+        raise KeyError(f"Label column '{is_labelled_col}' not found in predictions df.")
+ 
+    prob_cols: list[str] = [c for c in df.columns if c.startswith(prob_prefix)]
+    if not prob_cols:
+        raise RuntimeError(
+            f"No probability columns found with prefix '{prob_prefix}'. "
+            f"Please adjust `prob_prefix` or add prob_* columns."
+        )
+ 
+    probs = df[prob_cols].to_numpy()              # (N, num_classes)
+    labels = df[label_col].to_numpy()             # (N,)
+    ids = df[id_col].to_numpy()                   # (N,)
+    is_labelled = df[is_labelled_col].to_numpy()    # (N,)
+
+    predicted_class = np.argmax(probs, axis=1)  # (N,)
+ 
+    return df, {
+        "probas": probs,
+        "labels": labels,
+        "predicted_class": predicted_class,
+        "ids": ids,
+        "prob_cols": np.array(prob_cols),
+        "is_labelled": is_labelled
+    }
+
