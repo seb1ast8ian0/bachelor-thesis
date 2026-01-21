@@ -322,7 +322,7 @@ In dieser Untersuchung wird der Einfluss einer modifizierten Variante des Tabula
 
 \begin{table}[h]
     \centering
-    \caption{Ergebnisse der Ablationsstudie zum Tabular Tokenizer V2}
+    \caption{Ergebnisse der Ablationsstudie zum Tabular Tokenizer V2. Die feature-spezifischen Projektionen bieten keinen Mehrwert gegenüber der einfacheren V1-Variante.}
     \label{tab:ablation_tokenizer_v2}
     \begin{tabular}{lcc}
         \hline
@@ -346,7 +346,7 @@ Zusätzlich wurde untersucht, ob ein Gating-Mechanismus (CrossBERT Gated Hybrid)
 
 \begin{table}[h]
     \centering
-    \caption{Ergebnisse der Ablationsstudie zum Gating-Mechanismus}
+    \caption{Ergebnisse der Ablationsstudie zum Gating-Mechanismus. Die Erweiterung zeigt keine signifikante Verbesserung gegenüber der Basis-Hybrid-Variante.}
     \label{tab:ablation_gating}
     \begin{tabular}{lcc}
         \hline
@@ -365,7 +365,7 @@ In dieser Versuchsreihe wurde der Einfluss der Anzahl der Tabular Tokens ($n_{ta
 
 \begin{table}[h]
     \centering
-    \caption{Ergebnisse der Ablationsstudie zur Anzahl der Tabular Tokens ($n_{tab}$)}
+    \caption{Ergebnisse der Ablationsstudie zur Anzahl der Tabular Tokens ($n_{tab}$). Eine Sättigung tritt ab $n=8$ ein, während $n=16$ zu Performance-Verlust durch Rauschen führt.}
     \label{tab:ablation_num_tokens}
     \begin{tabular}{lcc}
         \hline
@@ -375,7 +375,7 @@ In dieser Versuchsreihe wurde der Einfluss der Anzahl der Tabular Tokens ($n_{ta
         CrossBERT Hybrid ($n_{tab} = 1$) & 0{,}973 & 0{,}611 \\
         CrossBERT Hybrid ($n_{tab} = 2$) & 0{,}974 & 0{,}617 \\
         CrossBERT Hybrid ($n_{tab} = 4$) & 0{,}975 & 0{,}617 \\
-        CrossBERT Hybrid ($n_{tab} = 8$) & 0{,}937 & 0{,}619 \\
+        CrossBERT Hybrid ($n_{tab} = 8$) & 0{,}974 & 0{,}619 \\
         CrossBERT Hybrid ($n_{tab} = 16$) & 0{,}954 & 0{,}618 \\
         \hline
     \end{tabular}
