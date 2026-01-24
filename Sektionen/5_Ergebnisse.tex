@@ -1,12 +1,14 @@
 \section{Ergebnisse}
 \label{sec:ergebnisse}
 
-Die zentralen Forschungsfragen dieser Arbeit adressieren die Effektivität von Cross-Attention-Modellen im Vergleich zu etablierten Baselines, den Einfluss der Positionierung des Fusionsblocks sowie die Generalisierbarkeit der Ansätze. Dieser Abschnitt präsentiert die quantitativen und qualitativen Ergebnisse der durchgeführten Experimente. Zunächst werden die Resultate des Hauptexperiments analysiert, gefolgt von einer detaillierten Betrachtung der Ablationsstudien. Abschließend wird eine exemplarische Explainability-Analyse durchgeführt, um die Interaktion zwischen Text- und Tabulardaten zu illustrieren.
+Dieses Kapitel stellt die Ergebnisse der Experimente vor. Der Fokus liegt auf dem Vergleich der CrossBERT-Architektur mit den etablierten Baselines sowie der Analyse zentraler Designentscheidungen durch Ablationsstudien. Eine abschließende Explainability-Analyse illustriert exemplarisch die Interaktion zwischen Text- und Tabulardaten.
 
 \subsection{Hauptexperiment}
 \label{sec:hauptexperiment}
 
-Im Hauptexperiment wurde die Klassifikationsleistung der verschiedenen Architekturen auf dem primären Datensatz evaluiert. Tabelle \ref{tab:main_results} fasst die zentralen Metriken zusammen. Neben der Klassifikationsleistung (AUC und Average Precision) wird auch die Modellkomplexität (FLOPs und Parameteranzahl) verglichen.
+Das Hauptexperiment evaluiert die Klassifikationsleistung auf dem primären Datensatz. Tabelle \ref{tab:main_results} fasst die zentralen Metriken (\Gls{aucroc}, \Gls{ap}) sowie die Modellkomplexität (\Gls{flops}, Parameter) zusammen.
+
+Die Integration von Cross-Attention führt zu einer messbaren Leistungssteigerung gegenüber den Baselines. Während die \Gls{aucroc}-Werte aller Modelle auf einem ähnlich hohen Niveau liegen, differenzieren sich die Architekturen in der \Gls{ap} deutlicher. Im Vergleich zu ConcatBERT (\Gls{ap} 0{,}579) erzielen alle CrossBERT-Varianten eine höhere Präzision. Auch gegenüber der starken SumBERT-Baseline (\Gls{ap} 0{,}601) erreicht insbesondere CrossBERT Early mit einer \Gls{ap} von 0{,}620 einen Zuwachs.
 
 \begin{table}[ht]
     \centering
@@ -15,8 +17,8 @@ Im Hauptexperiment wurde die Klassifikationsleistung der verschiedenen Architekt
     \label{tab:main_results}
     \begin{tabular}{lcccc}
         \hline
-        \textbf{Modell} & \textbf{AUC} & \textbf{AP} & \textbf{FLOPs} & \textbf{Parameter} \\
-         & \textbf{(Test)} & \textbf{(Test)} & & \\
+        \textbf{Modell} & \textbf{\Gls{aucroc} (Test)} & \textbf{\Gls{ap} (Test)} & \textbf{\Gls{flops}} & \textbf{Parameter} \\
+         &  &  & & \\
         \hline
         ConcatBERT & 0{,}9580 & 0{,}579 & $3{,}407 \cdot 10^{12}$ & 110 M \\
         SumBERT & 0{,}9727 & 0{,}601 & $3{,}407 \cdot 10^{12}$ & 110 M \\
@@ -27,49 +29,51 @@ Im Hauptexperiment wurde die Klassifikationsleistung der verschiedenen Architekt
     \end{tabular}
 \end{table}
 
-Zur Validierung der Robustheit wurden die Experimente mit einem alternativen Random Seed (333) wiederholt. Die Ergebnisse bestätigen die grundlegenden Trends des Hauptexperiments (siehe Anhang \ref{app:seed_333_evaluation}).
+Zur Überprüfung der Robustheit wurden die Experimente mit einem alternativen Random Seed (333) wiederholt. Die Daten in Anhang \ref{app:seed_333_evaluation} bestätigen die beobachteten Tendenzen.
 
 \subsection{Ablationsstudien}
 \label{sec:ergebnisse_ablations}
 
-Um den Einfluss spezifischer Designentscheidungen zu isolieren, wurden gezielte Ablationsstudien durchgeführt. Im Fokus stehen die Positionierung der Cross-Attention, die Anzahl der Tabular Tokens sowie methodische Erweiterungen wie der TabTokenizer V2 und Gating-Mechanismen.
+Gezielte Ablationsstudien isolieren den Einfluss einzelner Architekturkomponenten. Untersucht wurden, in Anlehnung an die in Abschnitt \ref{sec:ablations} beschriebenen Ablationen, die Positionierung der Cross-Attention, die Anzahl der Tab Tokens sowie methodische Erweiterungen wie Gating-Mechanismen.
 
 \subsubsection{Einfluss der Cross-Attention-Positionierung}
 \label{sec:res_ablation_position}
 
-Die Positionierung des Cross-Attention-Blocks (Early, Late, Hybrid) zeigt einen signifikanten Einfluss auf die Modellleistung, insbesondere auf die Average Precision (vgl. Tabelle \ref{tab:main_results}). Während auf dem primären Datensatz die Early-Fusion leicht favorisiert wird, deutet sich hier bereits an, dass unterschiedliche Datensätze unterschiedliche Fusionszeitpunkte bevorzugen können – eine Hypothese, die durch die externe Validierung (siehe Abschnitt \ref{sec:res_external_validation}) weiter gestützt wird.
+Die Positionierung der Cross-Attention (Early, Late, Hybrid) beeinflusst die Ergebnisse auf dem primären Datensatz nur geringfügig. Zwar erreicht die Early-Fusion die höchste Average Precision, jedoch liegen alle Varianten eng beieinander.
+
+Abbildung \ref{fig:crossbert_plots_positions} zeigt die Metrik-Verläufe. Die PR-Kurve (links) verdeutlicht leichte Vorteile von CrossBERT Early im Bereich hoher Precision. Die ROC-Kurven (rechts) verlaufen hingegen nahezu deckungsgleich, was sich in den fast identischen AUC-Werten widerspiegelt.
 
 \begin{figure}[h]
     \centering
     \includegraphics[width=\textwidth]{Bilder/metrics/cross_bert_pr_roc_test.png}
-    \caption{Vergleich der Metrik-Verläufe für CrossBERT Early, Late und Hybrid.}
+    \caption{Vergleich der PR- und ROC-Kurven für CrossBERT Early, Late und Hybrid.}
     \label{fig:crossbert_plots_positions}
 \end{figure}
 
-\subsubsection{Einfluss der Anzahl der Tabular Tokens}
+\subsubsection{Einfluss der Anzahl der Tab Tokens}
 \label{sec:res_ablation_tokens}
 
-Wie in Anhang \ref{app:ablation_num_tokens} detailliert dargestellt, wurde die Sensitivität des Modells gegenüber der Anzahl der Tabular Tokens ($n_{tab}$) untersucht. Die Ergebnisse zeigen ein klassisches Sättigungsverhalten: Eine Erhöhung der Token-Anzahl bis zu $n_{tab}=8$ stabilisiert die Performance. Besonders aufschlussreich ist jedoch, dass eine weitere Erhöhung auf $n_{tab}=16$ zu leichten Performance-Einbußen führt. Dies deutet darauf hin, dass zu viele Projektionen eher Rauschen (Noise) einführen oder zu Overfitting führen, statt zusätzliche nutzbare Information zu liefern. Für die finalen Modelle wurde daher ein stabiler Wert ($n_{tab}=8$) gewählt, um Robustheit zu gewährleisten.
+Eine separate Versuchsreihe analysiert die Sensitivität des Modells gegenüber der Anzahl der Tab Tokens ($n_{tab}$, siehe Anhang \ref{app:ablation_num_tokens}). Dabei zeigt sich eine Sättigung: Während eine Erhöhung bis $n_{tab}=8$ die Performance stabilisiert, führt eine weitere Steigerung auf $n_{tab}=16$ zu leichten Einbußen. Für die finalen Modelle fiel die Wahl daher auf $n_{tab}=8$ als robusten Kompromiss.
 
 \subsubsection{Tabular Tokenizer V2 und Gating}
 \label{sec:res_ablation_extensions}
 
-Die Untersuchung methodischer Erweiterungen wie des Tabular Tokenizers V2 (feature-spezifische Projektionen, siehe Anhang \ref{app:ablation_tokenizer_v2}) und des Gating-Mechanismus (siehe Anhang \ref{app:ablation_gating}) ergab keine signifikanten Vorteile gegenüber der Basis-Architektur. Im Hybrid-Setup führte weder der komplexere Tokenizer noch das Gating zu einer statistisch signifikanten Verbesserung. Folgt man dem Prinzip von \textit{Occam's Razor}, ist daher die einfachere Architektur (Tokenizer V1, ohne Gating) vorzuziehen, da sie bei geringerer Komplexität eine vergleichbare Leistung erbringt.
+Die Untersuchung methodischer Erweiterungen zeigt unterschiedliche Effekte. Der TabTokenizer V2 (feature-spezifische Projektionen, siehe Anhang \ref{app:ablation_tokenizer_v2}) bietet in Bezug auf die hier betrachteten Leistungsmetriken keinen messbaren Mehrwert; ein möglicher Interpretierbarkeitsgewinn wird im Rahmen dieser Arbeit nicht quantitativ ausgewertet. Der Gating-Mechanismus (siehe Anhang \ref{app:ablation_gating}) steigerte die Average Precision hingegen leicht von 0{,}619 (Hybrid) auf 0{,}624 (Gated Hybrid), bei gleichbleibender AUC.
 
 \subsection{Externe Validierung}
 \label{sec:res_external_validation}
 
-Ein zentraler Kritikpunkt an vielen ML-Studien ist die fehlende Generalisierbarkeit. Zur Überprüfung wurden die Modelle daher auf zwei gänzlich unterschiedlichen Datensätzen evaluiert.
+Ein zentrales Kriterium ist die Generalisierbarkeit der Architektur. Tests auf zwei unabhängigen, öffentlich verfügbaren Datensätzen, die bereits in Abschnitt \ref{sec:data_basis} vorgestellt wurden, überprüfen diese Eigenschaft.
 
 \subsubsection{Petfinder-Datensatz}
-Die Evaluation auf dem Petfinder-Datensatz (siehe Anhang \ref{app:petfinder_evaluation}) liefert das stärkste Argument für die CrossBERT-Architektur. Bei diesem komplexen Problem, bei dem Bilder, Text und Tabulardaten interagieren (hier reduziert auf Text+Tabular), versagen die simplen Baselines.
+Die Resultate auf dem Petfinder-Datensatz (siehe Anhang \ref{app:petfinder_evaluation}) zeigen, dass die Unterschiede zwischen den Architekturen hier deutlicher hervortreten als auf dem primären Datensatz.
 
-Wie Tabelle \ref{tab:petfinder_summary} zeigt, deklassiert CrossBERT Hybrid die Baselines regelrecht. Der Test-QWK konnte gegenüber SumBERT mehr als verdoppelt werden (von 0{,}0980 auf 0{,}2064). Dies beweist eindrücklich, dass die Cross-Attention-Mechanik in der Lage ist, komplexe Abhängigkeiten zwischen den Modalitäten zu modellieren, die durch einfaches Summieren oder Konkatenieren verloren gehen. Zudem zeigt sich hier, dass die Hybrid-Strategie der Early-Strategie überlegen ist, was darauf hindeutet, dass Text-Features bei komplexen Tasks erst eine gewisse Reife (Tiefe im Netzwerk) benötigen, bevor sie effektiv fusioniert werden können.
+Tabelle \ref{tab:petfinder_summary} belegt eine deutliche Verbesserung durch CrossBERT Hybrid gegenüber den Baselines. Der Test-QWK steigt von 0{,}0980 (SumBERT) auf 0{,}2064 (CrossBERT Hybrid).
 
 \begin{table}[h]
     \centering
     \small
-    \caption{Auszug der Petfinder-Ergebnisse (Test QWK). CrossBERT Hybrid zeigt hier eine massive Verbesserung gegenüber den Baselines.}
+    \caption{Auszug der Petfinder-Ergebnisse (Test QWK). CrossBERT Hybrid zeigt hier eine deutliche Verbesserung gegenüber den Baselines.}
     \label{tab:petfinder_summary}
     \begin{tabular}{lc}
         \hline
@@ -85,17 +89,16 @@ Wie Tabelle \ref{tab:petfinder_summary} zeigt, deklassiert CrossBERT Hybrid die 
 \end{table}
 
 \subsubsection{E-Commerce-Datensatz}
-Im Gegensatz dazu zeigen die Ergebnisse auf dem E-Commerce-Datensatz (Sentiment-Analyse, siehe Anhang \ref{app:ecommerce_evaluation}) kaum Unterschiede zwischen den Modellen (alle ca. 0{,}95 AUC). Dies deutet auf einen sogenannten \glqq Ceiling Effect\grqq{} hin: Da der Text (Kundenrezension) bereits extrem prädiktiv für das Sentiment ist, liefern die zusätzlichen tabularen Daten (Alter, Abteilung) kaum Mehrwert. Die komplexe Fusion schadet zwar nicht, bringt aber auch keinen Nutzen. Dies ist eine wichtige Erkenntnis: Cross-Attention lohnt sich vor allem dann, wenn beide Modalitäten signifikante, komplementäre Informationen tragen.
+Im Kontrast dazu zeigen die Resultate auf dem E-Commerce-Datensatz (Sentiment-Analyse, siehe Anhang \ref{app:ecommerce_evaluation}) nur marginale Unterschiede zwischen den Modellen (alle ca. 0{,}95 AUC). Der Text besitzt in diesem Setting bereits eine sehr hohe Prädiktionskraft, sodass die zusätzlichen Metadaten nur einen geringen inkrementellen Leistungszuwachs zeigen. Wichtig ist, dass die komplexere CrossBERT-Architektur die Leistung nicht negativ beeinflusst.
 
+\newpage
 \subsection{Illustrative Explainability-Analyse}
 \label{sec:res_explainability}
 
-Die folgende Analyse dient der exemplarischen Illustration, wie Cross-Attention und strukturierte Merkmale in einzelnen Vorhersagen interagieren. Zur Interpretation der Modellentscheidungen wird \gls{shap} \cite{Lundberg2017} herangezogen. SHAP ist eine spieltheoretische Methode, die den Beitrag jedes Features zur Vorhersage als Shapley-Wert quantifiziert und dabei sowohl lokale Genauigkeit als auch Konsistenz gewährleistet.
-
-SHAP wird hier als \textit{tabular-conditional} Erklärung genutzt: Der Text bleibt konstant, erklärt werden nur tabellarische Beiträge. Dies isoliert den Einfluss der strukturierten Daten im Kontext des gegebenen Textes.
+Dieser Abschnitt illustriert exemplarisch, wie Cross-Attention und strukturierte Merkmale in einzelnen Vorhersagen interagieren. Zur Interpretation wird \gls{shap} \cite{Lundberg2017} herangezogen. SHAP quantifiziert den Beitrag jedes Features zur Vorhersage als Shapley-Wert. Diese Arbeit nutzt SHAP als \textit{tabular-conditional} Erklärung: Der Text bleibt konstant, sodass ausschließlich die Beiträge der tabellarischen Merkmale im Kontext des gegebenen Textes isoliert werden. Die tabellarischen Features werden dabei, wie in Abschnitt \ref{sec:crossbert_architecture} beschrieben, global in eine feste Anzahl latenter Tabular Tokens projiziert, die jeweils eine gelernte Sicht auf die gesamte Tabellenzeile repräsentieren.
 
 \paragraph{Korrekte Klassifikation mit hoher Konfidenz}
-Im korrekt klassifizierten Fall zeigen die SHAP-Werte eine konsistente Dominanz mehrerer strukturierter Merkmale. Die Cross-Attention verteilt sich vergleichsweise gleichmäßig über die tabularen Token. Interessanterweise korrelieren die hohen Attention-Gewichte stark mit den Features, die auch hohe SHAP-Werte aufweisen. Dies unterstreicht die interne Konsistenz des Modells: Es \glqq achtet\grqq{} tatsächlich auf die Merkmale, die für die Entscheidung relevant sind.
+Abbildung \ref{fig:explainability_good_case} zeigt einen exemplarischen Fall, in dem das Modell die Zielklasse mit hoher Konfidenz korrekt vorhersagt. Für diesen Schadenfall mit strittiger Ampelsituation sagt das Modell die Regressklasse mit einer Konfidenz von 0{,}985 vorher; sowohl der Freitext (u.\,a.\ Hinweise auf Teilschuld des Unfallgegners und Empfehlung eines Sachverständigen) als auch mehrere tabellarische Merkmale (z.\,B.\ hoher Fahrzeugwert und Indikatoren für Teilschuld bzw.\ frühere Regressaktivitäten) sind mit einem Regressfall konsistent. Der obere Waterfall-Plot visualisiert, welche tabellarischen Merkmale die Vorhersage im Vergleich zur Baseline besonders stark nach oben oder unten verschieben; einzelne Feature-Ausprägungen, wie etwa ein positiver Indikator für Teilschuld, dominieren den Gesamtbeitrag deutlich. Die unteren Cross-Attention-Heatmaps zeigen, dass in der Early-Fusion zwei Tabular Tokens besonders stark gewichtet werden, während in der Late-Fusion ein Token dominiert und mehrere weitere mittlere Gewichte aufweisen.
 
 \begin{figure}[ht]
     \centering
@@ -125,7 +128,7 @@ Im korrekt klassifizierten Fall zeigen die SHAP-Werte eine konsistente Dominanz 
 \end{figure}
 
 \paragraph{Fehlklassifikation mit hoher Konfidenz}
-Im Fehlklassifikationsfall konzentriert sich die Cross-Attention oft stark auf einzelne, womöglich irreführende Token, während die SHAP-Werte insgesamt geringer und widersprüchlicher sind. Dies könnte als Indikator für Unsicherheit genutzt werden.
+Abbildung \ref{fig:explainability_bad_case} zeigt einen Fall, in dem das Modell trotz hoher Konfidenz eine falsche Klasse vorhersagt. Im gezeigten Beispiel liegt tatsächlich ein Regressfall (Label 1) vor, das Modell sagt jedoch die Nicht-Regressklasse mit maximaler Konfidenz (1{,}000) vorher. Der Freitext beschreibt einen vergleichsweise unspektakulären Rangierschaden mit unsicherer Einschätzung, ob ein Totalschaden vorliegt, sowie einem geplanten Sachverständigengutachten. Wie im Good Case werden oben die SHAP-Beiträge der tabellarischen Merkmale und darunter die Cross-Attention-Gewichte der Early- und Late-Fusion über die acht Tabular Tokens dargestellt. Im Unterschied zum Good Case liegen die SHAP-Beiträge hier insgesamt auf einem sehr niedrigen Niveau, und sowohl Early- als auch Late-Fusion konzentrieren einen Großteil des Attention-Gewichts auf jeweils einen einzelnen Tabular Token, während die übrigen Tokens nur geringe Gewichte erhalten.
 
 \begin{figure}[ht]
     \centering

@@ -45,7 +45,7 @@ Die Vorverarbeitung trennt strikt Trainings-, Validierungs- und Testdaten, um Da
 \subsection{Baseline-Modelle}
 \label{sec:baselines}
 
-Um den Mehrwert der entwickelten CrossBERT-Architektur gegenüber bestehenden multimodalen Modellen einordnen zu können, erfolgt ein Vergleich mit zwei bestehenden multimodalen Modellen für die Fusion von tabellarischen Daten und Textdaten: SumBERT (Early Fusion) und ConcatBERT (Late Fusion). Die Konzepte, der Quellcode sowie die Architekturgrafiken (Abbildungen \ref{fig:sumbert} und \ref{fig:concatbert}) dieser Modelle entstammen Vorarbeiten, die im Rahmen eines Praktikums bei der Firma QuantCo durchgeführt wurden \cite{Fuest2024Internship}. Der vollständige Quellcode beider Implementierungen befindet sich in Anhang \ref{app:source_code_baselines}.
+Um den Mehrwert der entwickelten CrossBERT-Architektur gegenüber bestehenden multimodalen Modellen einordnen zu können, erfolgt ein Vergleich mit zwei bestehenden multimodalen Modellen für die Fusion von tabellarischen Daten und Textdaten: SumBERT (Early Fusion) und ConcatBERT (Late Fusion). Die Konzepte, der Quellcode sowie die Architekturgrafiken (Abbildungen \ref{fig:sumbert} und \ref{fig:concatbert}) dieser Modelle entstammen Vorarbeiten, die im Rahmen eines Praktikums bei der Firma QuantCo durchgeführt wurden \cite{Fuest2024Internship}.
 
 \subsubsection{SumBERT (Early Fusion)}
 SumBERT führt die Tabelleninformation bereits vor dem Encoder in das Modell ein. Die vorverarbeiteten Tabellendaten, repräsentiert als Merkmalsvektor $\mathbf{x}_{\text{tab}} \in \mathbb{R}^F$, werden zunächst per linearer Projektion (realisiert durch ein \gls{mlp}) in den Vektorraum des Sprachmodells projiziert. Die Dimension der Projektion entspricht der Hidden-Size des Modells ($H=768$). Dieser projizierte Vektor wird anschließend elementweise zum Embedding des \texttt{[CLS]}-Tokens addiert, bevor die Sequenz den ersten Transformer-Layer durchläuft (siehe Abbildung \ref{fig:sumbert}).
@@ -85,7 +85,7 @@ Diese Architektur ist rechnerisch effizient und leicht zu implementieren, führt
 \subsection{CrossBERT-Architektur}
 \label{sec:crossbert_architecture}
 
-Die CrossBERT-Architektur erweitert einen \gls{bert}-Klassifikator um Cross-Attention zwischen Text und Tabellendaten. Anders als bei SumBERT und ConcatBERT (Abschnitt \ref{sec:baselines}) werden Tabellendaten nicht nur als statischer Zusatzvektor verwendet, sondern als kurze Token-Sequenz in den Hidden-Space von \gls{bert} projiziert, die der Text über Cross-Attention auslesen kann (vgl.\ Abschnitt \ref{sec:transformer_attention}). Der vollständige Quellcode ist in Anhang \ref{app:source_code_crossbert} dokumentiert.
+Die CrossBERT-Architektur erweitert einen \gls{bert}-Klassifikator um Cross-Attention zwischen Text und Tabellendaten. Anders als bei SumBERT und ConcatBERT (Abschnitt \ref{sec:baselines}) werden Tabellendaten nicht nur als statischer Zusatzvektor verwendet, sondern als kurze Token-Sequenz in den Hidden-Space von \gls{bert} projiziert, die der Text über Cross-Attention auslesen kann (vgl.\ Abschnitt \ref{sec:transformer_attention}).
 
 \subsubsection{Architekturüberblick}
 Abbildung \ref{fig:crossbert_architecture} zeigt den Gesamtaufbau. Text wird mit \texttt{deepset/gbert-base} in eine Sequenz von Embeddings überführt und durch den Encoder verarbeitet. Die Dimension der Hidden-States beträgt dabei $H=768$. Parallel dazu werden die tabellarischen Features durch einen \textit{TabularTokenizer} in eine Sequenz von $N$ Vektoren, die sogenannten \textit{Tab Tokens}, kodiert.

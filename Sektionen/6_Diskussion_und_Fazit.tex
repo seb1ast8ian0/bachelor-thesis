@@ -1,3 +1,38 @@
 \section{Diskussion und Fazit}
 
-TODO \ldots
+\subsection{Diskussion der Forschungsfragen}
+
+\subsubsection*{Forschungsfrage 1}
+\textit{Welche Unterschiede in der Vorhersagequalität zeigen sich zwischen Cross-Attention-Modellen und einfachen Baselines wie einfacher Concatenation oder Addierung bei der Fusion von Text- und Tabulardaten?}
+\begin{itemize}
+    \item Auf dem primären Datensatz erzielen alle CrossBERT-Varianten eine höhere Average Precision als die einfachen Baselines ConcatBERT und SumBERT, bei vergleichbaren AUC-Werten.
+    \item Der deutliche QWK-Gewinn von CrossBERT Hybrid gegenüber SumBERT auf dem Petfinder-Datensatz spricht dafür, dass Cross-Attention zusätzliche Informationen nutzbar macht, die in einfachen Aggregationsstrategien ungenutzt bleiben.
+    \item Auf dem E-Commerce-Datensatz erreichen alle Modelle ähnlich hohe AUC-Werte von etwa 0,95. Hier zeigt sich, dass die zusätzliche Modellkomplexität der Cross-Attention-Ansätze keinen messbaren Vorteil gegenüber den einfacheren Baselines bringt, die Textmodalität dominiert die Vorhersagequalität.
+    \item Insgesamt deuten die Ergebnisse darauf hin, dass Cross-Attention vor allem dann einen Mehrwert gegenüber einfachen Fusionsstrategien bietet, wenn beide Modalitäten substanzielle, komplementäre Information beitragen.
+\end{itemize}
+
+\subsubsection*{Forschungsfrage 2}
+\textit{Welchen Einfluss hat die Positionierung des Cross-Attention-Blocks (Early, Late oder Hybrid) auf die Modellleistung?}
+\begin{itemize}
+    \item Auf dem primären Datensatz fallen die Unterschiede zwischen Early-, Late- und Hybrid-Fusion gering aus. Early-Fusion erreicht zwar die höchste Average Precision, alle Varianten bewegen sich jedoch in einem engen Leistungsbereich.
+    \item Diese Beobachtung legt nahe, dass in diesem Setting vor allem die Existenz eines Cross-Attention-Schritts entscheidend ist, während die genaue Einbettungstiefe im Netzwerk eine untergeordnete Rolle spielt.
+    \item Auf dem Petfinder-Datensatz zeigt sich ein anderes Bild: Hier schneidet die Hybrid-Variante klar am besten ab. Dies spricht dafür, dass eine Kombination aus früher und später Fusion in komplexeren multimodalen Szenarien robustere Repräsentationen erzeugen kann.
+    \item Insgesamt deutet die Evaluation darauf hin, dass die optimale Positionierung der Cross-Attention datensatzspezifisch ist und von der Art der multimodalen Abhängigkeiten abhängt.
+\end{itemize}
+
+\subsubsection*{Forschungsfrage 3}
+\textit{Welche Stärken und Schwächen ergeben sich aus der Evaluation dieser Ansätze und welche Schlüsse lassen sich für die Weiterentwicklung multimodaler Modelle ziehen?}
+\begin{itemize}
+    \item Die Ablation der Tabular-Token-Anzahl zeigt ein Sättigungsverhalten: Bis $n_{tab}=8$ stabilisiert sich die Performance, zusätzliche Tokens führen zu leichten Einbußen. Dies legt nahe, dass eine zu feingranulare Projektion der Tabellendaten eher Rauschen als zusätzlichen Informationsgewinn erzeugen kann.
+    \item Der Gating-Mechanismus bringt gegenüber der ungegaten Hybrid-Variante einen leichten Gewinn in der Average Precision, ohne die AUC zu verändern. Dies spricht dafür, dass Gating irrelevante Tabellenanteile in der Fusion abschwächen kann.
+    \item Der absolute Leistungszuwachs durch Gating bleibt jedoch moderat. Unter Effizienz- und Wartungsgesichtspunkten stellt sich daher die Frage, ob die zusätzliche Komplexität im produktiven Einsatz immer gerechtfertigt ist (Stichwort Occam's Razor).
+    \item Die starke Verbesserung von CrossBERT Hybrid auf dem Petfinder-Datensatz, kombiniert mit den nahezu identischen Ergebnissen auf dem E-Commerce-Datensatz, verdeutlicht eine zentrale Stärke von Cross-Attention: Sie lohnt sich insbesondere in Szenarien mit komplexen, wirklich komplementären Text-Tabellen-Abhängigkeiten, während der Nutzen in Aufgaben mit bereits „einfacher“ textdominierter Struktur begrenzt ist.
+    \item Die Explainability-Analyse der Einzelbeispiele zeigt, dass SHAP und Cross-Attention unterschiedliche Ebenen der Tabelleninformation adressieren: SHAP bewertet konkrete Features, während die Cross-Attention Gewicht auf acht globale, latente Tabular Tokens verteilt. Im Good Case treten wenige dominante tabellarische Merkmale mit deutlichem Einfluss hervor, und die Attention konzentriert sich auf eine kleine Anzahl dieser latenten Tokens.
+    \item Im Bad Case sind die SHAP-Beiträge der Tabellendaten insgesamt sehr gering, obwohl sich die Attention erneut auf einzelne Tabular Tokens fokussiert. Dies deutet darauf hin, dass in solchen Fehlfällen die Entscheidung stärker von Textsignalen geprägt sein kann als von tabellarischen Merkmalen. Solche Konstellationen sind ein Ansatzpunkt, Explainability-Signale in zukünftigen Arbeiten systematisch für Analysen zur Modalitätsdominanz und für adaptive Cross-Attention-Mechanismen (z.\,B. Gating, Regularisierung der Tabular Tokens) zu nutzen.
+\end{itemize}
+
+\subsection{Fazit}
+
+\begin{itemize}
+    \item Ein vielversprechender Ansatz für zukünftige Arbeiten ist der systematische Einsatz von Explainability-Methoden, um den jeweiligen Beitrag einzelner Modalitäten (Text vs.\ Tabellendaten) zur finalen Vorhersage quantifizierbar zu machen und daraus robuste Strategien für modalitätssensitive Modelle abzuleiten.
+\end{itemize}
