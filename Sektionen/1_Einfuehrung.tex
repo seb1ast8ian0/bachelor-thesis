@@ -1,3 +1,41 @@
 \section{Einführung}
+\label{sec:einleitung}
 
-TODO \ldots
+Digitale Entscheidungsprozesse in der Versicherungswirtschaft stützen sich zunehmend auf heterogene Datenquellen. Neben klassischen, strukturierten Vertrags- und Schadendaten entstehen im Schadenbearbeitungsprozess umfangreiche Freitexte, wie Schadenhergangsbeschreibungen, Korrespondenz oder Notizen der Sachbearbeitenden. Für viele Fragestellungen genügt es nicht, diese Quellen isoliert zu betrachten. Erst die gemeinsame Auswertung von strukturierten Merkmalen und natürlichsprachlichen Informationen erlaubt eine präzise Einschätzung komplexer Sachverhalte.
+
+Ein zentrales Anwendungsfeld ist die Identifikation von Regresspotenzialen. Nach der Regulierung eines Schadens prüft das Versicherungsunternehmen, ob Ansprüche gegenüber Dritten (z.\,B. Verursachern oder anderen Versicherern) geltend gemacht werden können. In der Praxis wird oft nur ein Teil der Fälle einer vertieften Prüfung unterzogen, basierend auf Erfahrungswissen oder einfachen Regeln. Dies birgt das Risiko, dass Regressansprüche unentdeckt bleiben.
+
+\subsection{Problemstellung und Motivation}
+
+Die Herausforderung besteht darin, das Regresspotenzial einzelner Schadenfälle automatisiert vorherzusagen, um die manuelle Prüfung effizienter zu steuern. Hierfür stehen sowohl tabellarische Daten als auch Freitexte zur Verfügung. Die zentrale Problemstellung ist die effektive Fusion dieser Modalitäten. Etablierte Verfahren im Unternehmenskontext nutzen oft nur einfache Fusionsstrategien wie Konkatenation oder Addition, wodurch das Potenzial einer tiefergehenden Interaktion zwischen den Datenarten ungenutzt bleibt.
+
+Neuere Ansätze aus dem Bereich der multimodalen Transformer, insbesondere die Cross-Attention, ermöglichen einen gezielten Informationsaustausch zwischen verschiedenen Modalitäten. Für die spezifische Kombination von Tabellen- und Textdaten im Versicherungskontext ist jedoch noch unzureichend erforscht, ob und wann komplexe Mechanismen wie Cross-Attention gegenüber einfacheren, ressourcensparenden Methoden einen tatsächlichen Mehrwert bieten.
+
+Der in dieser Arbeit betrachtete Anwendungsfall basiert auf realen Daten eines großen deutschen Versicherungsunternehmens. Dies impliziert Herausforderungen wie unvollständige Daten und historisch bedingte Verzerrungen (Selection Bias), da das Modell auf Basis vergangener, menschlicher Entscheidungen trainiert wird. Dabei ist festzuhalten, dass die Problematik des Selection Bias ein Grundproblem des primären Datensatzes darstellt und nicht Untersuchungsgegenstand dieser Arbeit ist. Ziel der Arbeit ist ein robustes Modell, das die Priorisierung von zu prüfenden Fällen unterstützt und so zur Wirtschaftlichkeit der Schadenbearbeitung beiträgt.
+
+\subsection{Zielsetzung und Forschungsfragen}
+
+Ziel dieser Arbeit ist die Entwicklung und Evaluation einer multimodalen Transformer-Architektur („CrossBERT“), die Text- und Tabellendaten mittels Cross-Attention verknüpft. Im Vergleich zu Baselines mit statischer Fusion (SumBERT, ConcatBERT) soll untersucht werden, inwiefern die dynamische Gewichtung der Informationen die Vorhersagegüte verbessert.
+
+Daraus leiten sich folgende Forschungsfragen ab:
+\begin{enumerate}
+    \item Welche Unterschiede in der Vorhersagequalität zeigen sich zwischen Cross-Attention-Modellen und einfachen Baselines wie einfacher Konkatenation oder Addition bei der Fusion von Text- und Tabulardaten?
+    \item Welchen Einfluss hat die Positionierung des Cross-Attention-Blocks (Early, Late oder Hybrid) auf die Modellleistung?
+    \item Welche Stärken und Schwächen ergeben sich aus der Evaluation dieser Ansätze und welche Schlüsse lassen sich für die Weiterentwicklung multimodaler Modelle ziehen?
+\end{enumerate}
+
+\subsection{Beitrag und Aufbau der Arbeit}
+
+Die Arbeit leistet einen Beitrag zur angewandten Forschung im Bereich multimodaler Deep-Learning-Modelle für Tabular-Text-Daten. Kernpunkte sind:
+\begin{itemize}
+    \item \textbf{Modellentwicklung:} Konzeption der CrossBERT-Architektur zur Integration heterogener Datenströme.
+    \item \textbf{Evaluation:} Systematischer Vergleich mit etablierten Baselines auf einem internen Versicherungsdatensatz sowie externen Benchmarks, unter Berücksichtigung von Performance und Effizienz.
+    \item \textbf{Analyse:} Untersuchung verschiedener Fusionsarchitekturen und deren Auswirkung auf die Modellentscheidung.
+\end{itemize}
+
+Der Aufbau der Arbeit folgt dem Entwicklungsprozess: Kapitel~\ref{sec:theoretical_foundations} und \ref{sec:related_work} legen die theoretischen Grundlagen zur Repräsentation der in dieser Arbeit betrachteten Modalitäten, Transformern und multimodaler Fusion und ordnen die Arbeit in den aktuellen Forschungsstand ein. Kapitel~\ref{sec:methodik} beschreibt die Datenbasis, die Architektur von CrossBERT sowie das experimentelle Design. In Kapitel~\ref{sec:ergebnisse} werden die Ergebnisse der quantitativen Evaluation und der Ablationsstudien präsentiert. Abschließend diskutiert Kapitel~6 die Erkenntnisse und gibt einen Ausblick.
+
+
+\subsection{Voraussetzungen an den Lesenden}
+ 
+ Die Arbeit setzt grundlegende Kenntnisse im überwachten maschinellen Lernen voraus, insbesondere zu Klassifikationsproblemen, Trainings-, Validierungs- und Testverfahren sowie gängigen Evaluationsmetriken. Zudem wird ein Basisverständnis neuronaler Netze, insbesondere der Transformer-Architektur, angenommen. Zentrale Begriffe wie Token, Embedding, Attention und Cross-Attention werden in Kapitel~\ref{sec:multimodal_data} und Kapitel~\ref{sec:transformer_attention} kurz zusammengefasst, um eine einheitliche Begriffsbasis zu schaffen. Spezialisiertes Vorwissen zum Versicherungsrecht oder zu internen Prozessen der Regressbearbeitung wird nicht vorausgesetzt.

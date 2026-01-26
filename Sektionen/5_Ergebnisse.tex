@@ -29,7 +29,7 @@ Die Integration von Cross-Attention führt zu einer messbaren Leistungssteigerun
     \end{tabular}
 \end{table}
 
-Zur Überprüfung der Robustheit wurden die Experimente mit einem alternativen Random Seed (333) wiederholt. Die Daten in Anhang \ref{app:seed_333_evaluation} bestätigen die beobachteten Tendenzen.
+Zur Überprüfung der Robustheit wurden die Experimente mit einem alternativen Random Seed wiederholt. Die Daten in Anhang \ref{app:seed_333_evaluation} bestätigen die beobachteten Tendenzen.
 
 \subsection{Ablationsstudien}
 \label{sec:ergebnisse_ablations}
@@ -128,7 +128,7 @@ Abbildung \ref{fig:explainability_good_case} zeigt einen exemplarischen Fall, in
 \end{figure}
 
 \paragraph{Fehlklassifikation mit hoher Konfidenz}
-Abbildung \ref{fig:explainability_bad_case} zeigt einen Fall, in dem das Modell trotz hoher Konfidenz eine falsche Klasse vorhersagt. Im gezeigten Beispiel liegt tatsächlich ein Regressfall (Label 1) vor, das Modell sagt jedoch die Nicht-Regressklasse mit maximaler Konfidenz (1{,}000) vorher. Der Freitext beschreibt einen vergleichsweise unspektakulären Rangierschaden mit unsicherer Einschätzung, ob ein Totalschaden vorliegt, sowie einem geplanten Sachverständigengutachten. Wie im Good Case werden oben die SHAP-Beiträge der tabellarischen Merkmale und darunter die Cross-Attention-Gewichte der Early- und Late-Fusion über die acht Tabular Tokens dargestellt. Im Unterschied zum Good Case liegen die SHAP-Beiträge hier insgesamt auf einem sehr niedrigen Niveau, und sowohl Early- als auch Late-Fusion konzentrieren einen Großteil des Attention-Gewichts auf jeweils einen einzelnen Tabular Token, während die übrigen Tokens nur geringe Gewichte erhalten.
+Abbildung \ref{fig:explainability_bad_case} zeigt einen Fall, in dem das Modell trotz hoher Konfidenz eine falsche Klasse vorhersagt. Im gezeigten Beispiel liegt tatsächlich ein Regressfall (Klasse 1) vor, das Modell sagt jedoch die Nicht-Regressklasse mit maximaler Konfidenz (1{,}000) vorher. Der Freitext beschreibt einen vergleichsweise unspektakulären Rangierschaden mit unsicherer Einschätzung, ob ein Totalschaden vorliegt, sowie einem geplanten Sachverständigengutachten. Wie im Good Case werden oben die SHAP-Beiträge der tabellarischen Merkmale und darunter die Cross-Attention-Gewichte der Early- und Late-Fusion über die acht Tabular Tokens dargestellt. Im Unterschied zum Good Case liegen die SHAP-Beiträge hier insgesamt auf einem sehr niedrigen Niveau, und sowohl Early- als auch Late-Fusion konzentrieren einen Großteil des Attention-Gewichts auf jeweils einen einzelnen Tabular Token, während die übrigen Tokens nur geringe Gewichte erhalten.
 
 \begin{figure}[ht]
     \centering

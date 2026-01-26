@@ -13,7 +13,7 @@ Im Bereich Vision Language zeigt \textbf{LXMERT} \cite{Tan2019}, wie eine Dual-S
 \subsection{Verarbeitung von Tabellen und Text mit Transformern}
 Die Übertragung dieser Ideen auf Tabellen ist schwieriger, da tabellarische Daten im Gegensatz zu Text keine natürliche Reihenfolge der Einträge besitzen und heterogene Spaltentypen kombinieren (siehe Abschnitt \ref{sec:heterogeneity}).
 
-Der \textbf{TabTransformer} \cite{Huang2020} zeigt, dass Transformer Encoder auch für rein tabellarische, insbesondere kategoriale, Daten geeignet sind. Jede Spalte wird dabei als eigener Token betrachtet (Feature Tokenization), und Self Attention modelliert Abhängigkeiten zwischen den Spalten. Obwohl TabTransformer keine Textdaten einbezieht, bildet er die Grundlage für spätere Arbeiten mit spaltenweiser Attention.
+Der \textbf{TabTransformer} \cite{Huang2020} zeigt, dass Transformer Encoder auch für rein tabellarische, insbesondere kategoriale, Daten geeignet sind. Jede Spalte wird dabei als eigener Token betrachtet (Feature Tokenization), und Self-Attention modelliert Abhängigkeiten zwischen den Spalten. Obwohl TabTransformer keine Textdaten einbezieht, bildet er die Grundlage für spätere Arbeiten mit spaltenweiser Attention.
 
 Für die Kombination von Tabellen und Text wählt \textbf{TaBERT} \cite{Yin2020} einen anderen Weg. Tabellenzeilen werden in textähnliche Sequenzen linearisiert und gemeinsam mit natürlichsprachlichen Beschreibungen in ein BERT-Modell gegeben. Das entspricht einer frühen Fusion: Tabelle und Text werden schon auf Eingabeebene zu einer gemeinsamen Sequenz zusammengeführt. Die ursprüngliche Tabellenstruktur ist dann nur noch indirekt erkennbar.
 
