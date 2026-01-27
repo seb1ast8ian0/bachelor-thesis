@@ -7,7 +7,7 @@
 \begin{itemize}
     \item Auf dem primären Datensatz erzielen alle CrossBERT-Varianten eine höhere Average Precision als die einfachen Baselines ConcatBERT und SumBERT, bei vergleichbaren AUC-Werten.
     \item Der deutliche QWK-Gewinn von CrossBERT Hybrid gegenüber SumBERT auf dem Petfinder-Datensatz spricht dafür, dass Cross-Attention zusätzliche Informationen nutzbar macht, die in einfachen Aggregationsstrategien ungenutzt bleiben.
-    \item Auf dem E-Commerce-Datensatz erreichen alle Modelle ähnlich hohe AUC-Werte von etwa 0,95. Hier zeigt sich, dass die zusätzliche Modellkomplexität der Cross-Attention-Ansätze keinen messbaren Vorteil gegenüber den einfacheren Baselines bringt, die Textmodalität dominiert die Vorhersagequalität.
+    \item Auf dem E-Commerce-Datensatz erreichen alle Modelle ähnlich hohe AUC-Werte von etwa 0,95. Hier zeigt sich, dass die zusätzliche Modellkomplexität der Cross-Attention-Ansätze keinen messbaren Vorteil gegenüber den einfacheren Baselines bringt; da die Einbindung tabellarischer Merkmale unabhängig von der gewählten Fusionsstrategie kaum Einfluss auf die Metriken hat, liegt die Hypothese nahe, dass die Textmodalität in diesem Setting bereits den Großteil der Vorhersagegüte trägt und die Tabellenmerkmale nur einen begrenzten zusätzlichen Nutzen liefern.
     \item Insgesamt deuten die Ergebnisse darauf hin, dass Cross-Attention vor allem dann einen Mehrwert gegenüber einfachen Fusionsstrategien bietet, wenn beide Modalitäten substanzielle, komplementäre Information beitragen.
 \end{itemize}
 
@@ -35,4 +35,7 @@
 
 \begin{itemize}
     \item Ein vielversprechender Ansatz für zukünftige Arbeiten ist der systematische Einsatz von Explainability-Methoden, um den jeweiligen Beitrag einzelner Modalitäten (Text vs.\ Tabellendaten) zur finalen Vorhersage quantifizierbar zu machen und daraus robuste Strategien für modalitätssensitive Modelle abzuleiten.
+    \item Aufbauend auf der in dieser Arbeit verwendeten vereinfachten Hybrid-Fusion bietet sich die Untersuchung komplexerer Deep-Fusion-Varianten an, etwa die Integration von Cross-Attention-Blöcken in mehreren oder allen Encoder-Layern, um feinere Interaktionen zwischen Text- und Tabellenrepräsentationen zu ermöglichen.
+    \item Darüber hinaus wäre es naheliegend, Cross-Attention nicht nur auf das \texttt{[CLS]}-Token, sondern auf alle Texttokens zu erweitern und diese vollflächige Variante in Ablationsstudien der hier gewählten CLS-basierten Fusion gegenüberzustellen, um den Trade-off zwischen zusätzlichem Rechenaufwand und möglichem Performancegewinn besser zu verstehen.
+    \item Ein weiterer Ansatzpunkt ist die genauere Untersuchung von Feature Tokenization. Hierbei könnten explizite Self-Attention-Schichten zwischen spaltenweisen Tabular Tokens eingesetzt werden, um Muster und Abhängigkeiten zwischen einzelnen Features direkter zu modellieren und anschließend mit den Textrepräsentationen zu fusionieren.
 \end{itemize}

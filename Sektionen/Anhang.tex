@@ -44,8 +44,8 @@ Abbildung \ref{fig:petfinder_metrics} visualisiert die Konfusionsmatrizen der Mo
     \label{fig:petfinder_metrics}
 \end{figure}
 
-\paragraph{Methodische Einschränkung.}
-Eine wesentliche methodische Einschränkung liegt in der Optimierung auf eine binäre Unterscheidung (Klasse 0 vs.\ Rest), die aus der Trainingslogik des primären Regress-Datensatzes übernommen wurde. Um die Vergleichbarkeit der Architekturen zu gewährleisten, wurde diese Logik beibehalten. Technisch wird dies durch die Klasse \texttt{MetricsAggregator} umgesetzt, deren Methode \texttt{update} die Zielvariablen mittels \texttt{(y\_true != 0).long()} binarisiert. Folglich werden alle Klassen 1 bis 4 zu einer positiven Klasse zusammengefasst, während Klasse 0 lediglich als negative Hintergrundklasse dient. Dies führt dazu, dass die Klasse 0 nicht als eigenständige Zielklasse optimiert wird, was das Fehlen expliziter Vorhersagen für diese Kategorie im Petfinder-Datensatz erklärt (vgl. Abbildung \ref{fig:petfinder_metrics}).
+\paragraph{Methodische Besonderheit.}
+Für den Petfinder-Datensatz wird trotz der ordinalen Zielskala (Klassen 0 bis 4) durchgängig ein Cross-Entropy-Loss für die Fünf-Klassen-Klassifikation verwendet. Spezialisierte Verlustfunktionen für ordinale Daten wären prinzipiell geeigneter, der einheitliche Loss wurde hier jedoch bewusst beibehalten, um die methodische Vergleichbarkeit der Modellarchitekturen über alle Datensätze hinweg sicherzustellen.
 
 \subsection{Evaluation auf dem E-Commerce-Datensatz}
 \label{app:ecommerce_evaluation}

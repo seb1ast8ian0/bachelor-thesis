@@ -26,10 +26,11 @@ Der primäre Datensatz stammt aus einem deutschen Versicherungsunternehmen und w
     \end{tabular}
 \end{table}
 
+\newpage
 Zur externen Validierung werden zwei Kaggle-Benchmarks genutzt:
 \begin{enumerate}
-    \item \textbf{Women's E-Commerce Clothing Reviews} \cite{KaggleEcommerce}: Binäre Sentiment-Klassifikation mit Text und Metadaten (23.486 Samples gesamt; 21.137 Training, 2.349 Validierung).
-    \item \textbf{PetFinder.my Adoption Prediction} \cite{KagglePetfinder}: Multi-Class-Klassifikation mit Beschreibungen und Metadaten (14.993 Samples gesamt; 13.494 Training, 1.499 Validierung).
+    \item \textbf{Women's E-Commerce Clothing Reviews} \cite{KaggleEcommerce}: Binäre Sentiment-Klassifikation (Positive vs.\ Negative Reviews) mit Text und Metadaten (23.486 Samples gesamt; 21.137 Training, 2.349 Validierung).
+    \item \textbf{PetFinder.my Adoption Prediction} \cite{KagglePetfinder}: Ordinale Multi-Class-Klassifikation der Adoptionsgeschwindigkeit (Klassen 0 bis 4) auf Basis von Beschreibungen und Metadaten (14.993 Samples gesamt; 13.494 Training, 1.499 Validierung).
 \end{enumerate}
 Damit wird die Übertragbarkeit der Architektur außerhalb der Versicherungsdomäne überprüft.
 
@@ -124,6 +125,8 @@ Hierbei sind $\mathbf{W}_Q, \mathbf{W}_K, \mathbf{W}_V \in \mathbb{R}^{H \times 
 
 Die CrossBERT-Implementierung nutzt Multi-Head Attention und ergänzt diese um Residualpfade sowie ein Feed-Forward-Netzwerk (Abbildung \ref{fig:cross_attention_block}). Optional kann eine Tab-Maske genutzt werden, um einzelne Tab Tokens in der Attention auszublenden.
 
+Die Beschränkung der Cross-Attention auf das \texttt{[CLS]}-Token statt auf alle Texttokens ist bewusst gewählt. Erstens reduziert sie die Rechenkomplexität, weil nur ein Textvektor mit den Tab Tokens interagiert und nicht die gesamte Sequenz. Zweitens zielt die Aufgabe auf eine Entscheidung auf Dokumentebene. Das \texttt{[CLS]}-Token bündelt die Bedeutung des gesamten Textes, sodass die Tabelleninformation direkt in diese Gesamtrepräsentation eingemischt wird.
+
 \begin{figure}[H]
     \centering
     \hfill
@@ -151,8 +154,10 @@ Die Position des Cross-Attention-Blocks legt fest, ob die Fusion früh (vor dem 
 \begin{itemize}
     \item \textbf{Early Fusion:} Cross-Attention wird auf den \texttt{[CLS]}-Embedding-Vektor vor dem Encoder angewandt, sodass tabellarische Information die gesamte nachfolgende Kontextualisierung beeinflussen kann.
     \item \textbf{Late Fusion:} Cross-Attention wird erst auf den finalen Encoder-\texttt{[CLS]}-State angewandt, wodurch tabellarische Information als kontextabhängige Nachschärfung der Dokumentrepräsentation integriert wird.
-    \item \textbf{Hybrid Fusion:} Early und Late Fusion werden kombiniert, um sowohl die Encoder-Features als auch die finale Entscheidungsschicht mit Tabellensignalen zu versorgen.
+    \item \textbf{Hybrid Fusion:} In dieser Arbeit kommt eine vereinfachte Hybrid-Fusion zum Einsatz: Early und Late Fusion werden kombiniert, um sowohl die Encoder-Features als auch die finale Entscheidungsschicht mit tabellarischen Informationen anzureichern.
 \end{itemize}
+
+Die Auswirkungen der Fusionsposition (Early/Late/Hybrid) sowie der Anzahl der Tab Tokens \texttt{num\_tab\_token} werden in gezielten Ablationsstudien systematisch untersucht (vgl.\ Abschnitt \ref{sec:ablations}).
 
 \subsection{Trainings-Setup und Evaluationsmetriken}
 \label{sec:training_setup}
@@ -160,7 +165,7 @@ Die Position des Cross-Attention-Blocks legt fest, ob die Fusion früh (vor dem 
 Damit die Modelle vergleichbar sind, werden alle Experimente mit einer gemeinsamen Pipeline und einer zentralen Konfiguration durchgeführt. Baselines und CrossBERT teilen sich dabei dieselben Trainingsparameter; sie unterscheiden sich nur in der Art der multimodalen Fusion (vgl.\ Abschnitt \ref{sec:crossbert_architecture}).
 
 \paragraph{Modell und Lernstrategie.}
-Als Textencoder wird \texttt{deepset/\allowbreak gbert-base} verwendet \allowbreak\cite{Chan2020GBERT}. GBERT ist ein vortrainiertes deutsches Sprachmodell auf Basis von BERT \cite{Devlin2019} und dient als Initialisierung für das end-to-end Fine-Tuning im jeweiligen Klassifikations-Setup. Als Verlustfunktion für das Training dient Cross-Entropy-Loss.
+Als Textencoder wird \texttt{deepset/\allowbreak gbert-base} verwendet \allowbreak\cite{Chan2020GBERT}. GBERT ist ein vortrainiertes deutsches Sprachmodell auf Basis von BERT \cite{Devlin2019} und dient als Initialisierung für das end-to-end Fine-Tuning im jeweiligen Klassifikations-Setup. Als Verlustfunktion für das Training dient durchgängig Cross-Entropy-Loss; dies gilt auch für den ordinalen Petfinder-Datensatz, um die methodische Vergleichbarkeit aller Modelle sicherzustellen (vgl.\ Anhang \ref{app:petfinder_evaluation}).
 
 \paragraph{Optimierung und Trainingsprotokoll.}
 Die zentralen Trainingshyperparameter sind in Tabelle \ref{tab:training_hparams} zusammengefasst. Zur Stabilisierung des Fine-Tunings wird eine Lernratenstrategie aus linearem Warmup und anschließendem Cosine Scheduling eingesetzt. Das Early Stopping überwacht \texttt{val/average\_\allowbreak precision}. Die Validierung wird in festen Intervallen innerhalb einer Epoche ausgeführt (\texttt{val\_\allowbreak check\_\allowbreak interval}=500), sodass alle 500 Batches geprüft wird, ob das Early Stopping greifen soll. 
