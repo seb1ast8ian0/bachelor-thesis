@@ -110,7 +110,7 @@ Die Gesamtsequenz ergibt sich durch Konkatenation der einzelnen Projektionen:
 \begin{equation}
     \mathbf{E}_{\text{tab}} = [\mathbf{e}_1, \dots, \mathbf{e}_N]
 \end{equation}
-Technisch wird dies durch $N$ parallele, lernbare \gls{mlp}-Projektionsköpfe realisiert. Jeder Kopf bildet den gesamten Feature-Vektor $\mathbf{X}_{\text{tab}}$ auf einen eigenen Token-Vektor $\mathbf{e}_i$ ab. Die $N$ Projektionsköpfe erzeugen somit $N$ unterschiedliche, gelernte „Ansichten“ auf dieselbe Tabellenzeile.
+Technisch wird dies durch $N$ parallele, lernbare \gls{mlp}-Projektionsköpfe realisiert. Jeder Kopf bildet den gesamten Feature-Vektor einer Tabellenzeile auf einen eigenen Token-Vektor $\mathbf{e}_i$ ab. Die $N$ Projektionsköpfe erzeugen somit $N$ unterschiedliche, gelernte „Ansichten“ auf dieselbe Tabellenzeile.
 
 Diese globale Projektion entkoppelt die Sequenzlänge von der Eingabedimension $F$, die durch One-Hot-Encoding stark anwächst. Während eine direkte Tokenisierung aller Spalten oder eine Gruppierung nach Originalfeatures (wie beim später vorgestellten \textit{TabTokenizer V2}) zu variablen Sequenzlängen führt, garantiert die fixe Anzahl $N$ (Hyperparameter \texttt{num\_\allowbreak tab\_\allowbreak token}) eine konstante Recheneffizienz. Dies zwingt das Modell, die relevantesten Informationen der hochdimensionalen Tabellendaten in eine kompakte latente Repräsentation zu komprimieren.
 

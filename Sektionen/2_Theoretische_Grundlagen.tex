@@ -33,7 +33,7 @@ Einen wichtigen Schritt brachten verteilte Wortrepräsentationen wie Word Embedd
 
 Kontextuelle Embeddings wie \Gls{elmo} \cite{Peters2018} und später \Gls{bert} \cite{Devlin2019} lösen dieses Problem, weil sie Wortvektoren abhängig vom jeweiligen Satzkontext berechnen. \gls{bert} wird als Encoder-only-Modell auf großen Textmengen vortrainiert und nutzt dabei die Transformer-Architektur sowie Self-Attention-Mechanismen (siehe Abschnitt \ref{sec:transformer_attention}), um für jedes Token eine kontextabhängige Repräsentation zu erzeugen.
 
-Für die Verarbeitung ganzer Sätze oder Dokumente, wie sie in dieser Arbeit relevant ist, stoßen reine Token-Embeddings jedoch an Grenzen. Hier kommen Techniken wie Pooling oder die Verwendung spezieller Tokens ins Spiel. Insbesondere das \texttt{[CLS]}-Token (Classifier Token) in Modellen wie \gls{bert} wird jeder Eingabesequenz vorangestellt, sammelt über Self-Attention kontextuelle Informationen und sein finaler Vektor $T_{[CLS]}$ dient als kompakte Satzrepräsentation für Klassifikationsaufgaben \cite{Devlin2019}. In dieser Arbeit wird das \texttt{[CLS]}-Token als kompakte Textrepräsentation genutzt, um Textinformationen später mit tabellarischen Merkmalen zu kombinieren.
+Reine Token-Embeddings liefern zwar kontextualisierte Repräsentationen einzelner Wörter, stellen jedoch keine natürliche Repräsentation ganzer Sätze oder Dokumente dar. Die semantisch relevante Information ist dabei über viele Tokens verteilt, sodass eine eindeutige Aggregation für Klassifikationsaufgaben nicht gegeben ist. Insbesondere bei längeren Texten führt dies zu einer Abnahme der Repräsentationsstabilität und erschwert die Nutzung der Token-Sequenz als globale Textrepräsentation \cite{Devlin2019, Ethayarajh2019}. Aus diesem Grund werden Pooling-Strategien oder spezielle Aggregationstokens wie das \texttt{[CLS]}-Token eingesetzt, um eine kompakte, fix-dimensionale Repräsentation der gesamten Eingabesequenz zu erzeugen. In dieser Arbeit wird das \texttt{[CLS]}-Token als kompakte Textrepräsentation genutzt, um Textinformationen später mit tabellarischen Merkmalen zu kombinieren.
 
 \subsubsection{Repräsentation tabellarischer Daten}
 \label{sec:tab_representation}
@@ -57,7 +57,7 @@ Der Prozess, tabellarische Daten in eine für Transformer verarbeitbare Sequenz 
 \end{equation}
 Hierbei entspricht $H$ der Dimension des Hidden-States des verwendeten Transformer-Modells (z.\,B.\ $H=768$ bei \gls{bert}). Durch diese Angleichung der Dimensionen kann später Cross-Attention zwischen Text- und Tabellen-Tokens angewendet werden \cite{Badaro2023}. Im Gegensatz zu \gls{ohe} erlaubt dieser dichte Vektorraum das Erlernen semantischer Ähnlichkeiten, sodass verwandte Features im Vektorraum geometrisch näher beieinander liegen.
 
-Es ist jedoch essenziell zu unterscheiden: Während bei Text-Tokens die Reihenfolge die semantische Bedeutung bestimmt, handelt es sich bei \textit{Tabular Tokens} um eine künstlich erzeugte Sequenz ohne natürliche Ordnung. Die Sequenzform dient hier rein als technisches Konstrukt für die Attention-Verarbeitung, nicht als Träger syntaktischer Informationen.
+Es ist jedoch essenziell zu unterscheiden: Während bei Text-Tokens die Reihenfolge die semantische Bedeutung bestimmt und deshalb explizite Positions-Embeddings eingesetzt werden, handelt es sich bei \textit{Tabular Tokens} um eine künstlich erzeugte Sequenz ohne natürliche Ordnung. In dieser Arbeit wird daher bewusst auf eine sequentielle Positionskodierung für Tabular Tokens verzichtet; ihre Unterscheidung erfolgt über die jeweiligen Projektionsköpfe im TabularTokenizer. Die Sequenzform dient hier rein als technisches Konstrukt für die Attention-Verarbeitung, nicht als Träger syntaktischer Informationen.
 
 
 \paragraph{Architekturen der Repräsentation}
@@ -142,8 +142,9 @@ Dies setzt zwingend voraus, dass beide Vektoren dieselbe Dimension aufweisen, we
 
 \paragraph{Attention-Mechanismen}
 Im Gegensatz zu statischen Operationen wie der Addition oder Verkettung erlauben Attention-Mechanismen eine dynamische Gewichtung der Features.
-Besonders relevant ist die \textit{Cross-Attention}. Hierbei können Repräsentationen einer Zielmodalität (z.\,B. Text) gezielt Informationen aus einer Quellmodalität (z.\,B. Tabelle) abfragen. Typischerweise stammen dabei die \textit{Queries} aus der Zielmodalität, während \textit{Keys} und \textit{Values} aus der Quellmodalität geliefert werden. Dies ermöglicht eine gewichtete Aggregation von Informationen, die auf den aktuellen Kontext konditioniert ist, und erlaubt die Modellierung komplexer Abhängigkeiten über Modalitätsgrenzen hinweg \cite{Li2024}.
+Besonders relevant ist die \textit{Cross-Attention}. Hierbei können Repräsentationen einer Zielmodalität (z.\,B. Text) gezielt Informationen aus einer Quellmodalität (z.\,B. Tabelle) abfragen. Typischerweise stammen dabei die \textit{Queries} aus der Zielmodalität, während \textit{Keys} und \textit{Values} aus der Quellmodalität geliefert werden. Dies ermöglicht eine gewichtete Aggregation von Informationen, die auf den aktuellen Kontext konditioniert ist, und erlaubt die Modellierung komplexer Abhängigkeiten über Modalitätsgrenzen hinweg \cite{Li2024}. Anschaulich bedeutet dies etwa, dass in einem Textkommentar wie „Viel zu teuer für die gebotene Qualität“ das Token „teuer“ (Query) bevorzugt Informationen aus der Tabellenspalte „Preis“ (Key/Value) abruft, während Merkmale wie „Lieferdatum“ oder „Farbe“ nur gering gewichtet werden.
 
+\newpage
 \subsubsection{Architekturen und Positionierung der Fusion}
 
 Neben der gewählten Operation ist wichtig, \textit{an welcher Stelle} im Modell die Fusion stattfindet (früh, spät oder mehrfach in der Tiefe) \cite{Jiao2024, Li2024, Baltrusaitis2019}.
