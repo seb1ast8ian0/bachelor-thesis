@@ -39,7 +39,7 @@ Abbildung \ref{fig:petfinder_metrics} visualisiert die Konfusionsmatrizen der Mo
 
 \begin{figure}[h]
     \centering
-    \includegraphics[width=\textwidth]{Bilder/petfinder_test_metrics.png}
+    \includegraphics[width=\textwidth]{Bilder/petfinder_test_metrics_reordered.png}
     \caption{Konfusionsmatrizen der Modelle auf dem Petfinder-Testdatensatz. Die Titel zeigen den jeweiligen Test-QWK.}
     \label{fig:petfinder_metrics}
 \end{figure}
@@ -47,6 +47,7 @@ Abbildung \ref{fig:petfinder_metrics} visualisiert die Konfusionsmatrizen der Mo
 \paragraph{Methodische Besonderheit.}
 Für den Petfinder-Datensatz wird trotz der ordinalen Zielskala (Klassen 0 bis 4) durchgängig ein Cross-Entropy-Loss für die Fünf-Klassen-Klassifikation verwendet. Spezialisierte Verlustfunktionen für ordinale Daten wären prinzipiell geeigneter, der einheitliche Loss wurde hier jedoch bewusst beibehalten, um die methodische Vergleichbarkeit der Modellarchitekturen über alle Datensätze hinweg sicherzustellen.
 
+\newpage
 \subsection{Evaluation auf dem E-Commerce-Datensatz}
 \label{app:ecommerce_evaluation}
 
