@@ -169,21 +169,21 @@
 
   % Glossary
   \iftotalcountglossarys
-    \newpage
+    \let\origglossarysection\glossarysection
+    \renewcommand{\glossarysection}[2][]{\newpage\origglossarysection[##1]{##2}}
     \setglossarystyle{altlist}
     \printglossary
+    \let\glossarysection\origglossarysection
   \fi
 
   % Appendix
   \IfFileExists{./Sektionen/Anhang.tex}{
-    \newpage
     \appendix
     \renewcommand{\thesection}{A\arabic{section}}
     \include{Sektionen/Anhang}
   }{}
 
   % Declaration of Honor
-  \newpage
   \phantomsection
   \addcontentsline{toc}{section}{\declarationname}
   \lhead{\declarationname}
