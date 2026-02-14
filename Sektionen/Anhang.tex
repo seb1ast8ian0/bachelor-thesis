@@ -44,7 +44,8 @@ Abbildung \ref{fig:petfinder_metrics} visualisiert die Konfusionsmatrizen der Mo
     \label{fig:petfinder_metrics}
 \end{figure}
 
-\paragraph{Methodische Besonderheit.}
+\newpage
+\paragraph{Methodische Besonderheit}
 Für den Petfinder-Datensatz wird trotz der ordinalen Zielskala (Klassen 0 bis 4) durchgängig ein Cross-Entropy-Loss für die Fünf-Klassen-Klassifikation verwendet. Spezialisierte Verlustfunktionen für ordinale Daten wären prinzipiell geeigneter, der einheitliche Loss wurde hier jedoch bewusst beibehalten, um die methodische Vergleichbarkeit der Modellarchitekturen über alle Datensätze hinweg sicherzustellen.
 
 \newpage
@@ -145,7 +146,7 @@ In dieser Versuchsreihe wurde der Einfluss der Anzahl der Tabular Tokens ($n_{ta
 
 \begin{table}[h]
     \centering
-    \caption{Ergebnisse der Ablationsstudie zur Anzahl der Tabular Tokens ($n_{tab}$). Ab $n=8$ zeigt sich eine Sättigung; bei $n=16$ sinkt die AUC leicht, während die AP auf ähnlichem Niveau bleibt.}
+    \caption{Ergebnisse der Ablationsstudie zur Anzahl der Tabular Tokens ($n_{tab}$). Ab $n=8$ zeigt sich eine Sättigung. Bei $n=16$ sinkt die AUC leicht, während die AP auf ähnlichem Niveau bleibt.}
     \label{tab:ablation_num_tokens}
     \begin{tabular}{lcc}
         \hline

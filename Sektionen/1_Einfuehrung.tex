@@ -11,29 +11,29 @@ Die Herausforderung besteht darin, das Regresspotenzial einzelner Schadenfälle 
 
 Neuere Ansätze aus dem Bereich der multimodalen Transformer, insbesondere die Cross-Attention, ermöglichen einen gezielten Informationsaustausch zwischen verschiedenen Modalitäten. Für die spezifische Kombination von Tabellen- und Textdaten im Versicherungskontext ist jedoch noch unzureichend erforscht, ob und wann komplexe Mechanismen wie Cross-Attention gegenüber einfacheren, ressourcensparenden Methoden einen tatsächlichen Mehrwert bieten.
 
-Der in dieser Arbeit betrachtete Anwendungsfall basiert auf realen Daten eines großen deutschen Versicherungsunternehmens. Dies impliziert Herausforderungen wie unvollständige Daten und historisch bedingte Verzerrungen (Selection Bias), da das Modell auf Basis vergangener, menschlicher Entscheidungen trainiert wird. Dabei ist festzuhalten, dass die Problematik des Selection Bias ein Grundproblem des primären Datensatzes darstellt und nicht Untersuchungsgegenstand dieser Arbeit ist. Ziel der Arbeit ist ein robustes Modell, das die Priorisierung von zu prüfenden Fällen unterstützt und so zur Wirtschaftlichkeit der Schadenbearbeitung beiträgt.
+Der in dieser Arbeit betrachtete Anwendungsfall basiert auf realen Daten eines großen deutschen Versicherungsunternehmens. Dies bringt spezifische Herausforderungen mit sich, insbesondere unvollständige Daten, fehlende Labels und einen Selection Bias, da das Modell auf Entscheidungen trainiert wird, die auf menschlicher Erfahrung und unvollständigen Prüfprozessen beruhen. Diese datenbezogenen Verzerrungen sind Grundprobleme des primären Datensatzes, werden hier aber nicht untersucht. Ziel der Arbeit ist ein robustes Modell, das die Priorisierung von zu prüfenden Fällen unterstützt und so zur Wirtschaftlichkeit der Schadenbearbeitung beiträgt.
 
 \subsection{Zielsetzung und Forschungsfragen}
 
 Ziel dieser Arbeit ist die Entwicklung und Evaluation einer multimodalen Transformer-Architektur („CrossBERT“), die Text- und Tabellendaten mittels Cross-Attention verknüpft. Im Vergleich zu Baselines mit statischer Fusion (SumBERT, ConcatBERT) soll untersucht werden, inwiefern die dynamische Gewichtung der Informationen die Vorhersagegüte verbessert.
 
-Daraus leiten sich folgende Forschungsfragen ab:
+Daraus leiten sich die folgenden Forschungsfragen ab:
 \begin{enumerate}
-    \item Welche Unterschiede in der Vorhersagequalität zeigen sich zwischen Cross-Attention-Modellen und einfachen Baselines wie einfacher Konkatenation oder Addition bei der Fusion von Text- und Tabulardaten?
+    \item Welche Unterschiede in der Vorhersagequalität zeigen sich zwischen Cross-Attention-Modellen und einfachen Baselines wie einfacher Konkatenation oder Addition bei der Fusion von Text- und Tabellendaten?
     \item Welchen Einfluss hat die Positionierung des Cross-Attention-Blocks (Early, Late oder Hybrid) auf die Modellleistung?
     \item Welche Stärken und Schwächen ergeben sich aus der Evaluation dieser Ansätze und welche Schlüsse lassen sich für die Weiterentwicklung multimodaler Modelle ziehen?
 \end{enumerate}
 
 \subsection{Beitrag und Aufbau der Arbeit}
 
-Die Arbeit leistet einen Beitrag zur angewandten Forschung im Bereich multimodaler Deep-Learning-Modelle für Tabular-Text-Daten. Kernpunkte sind:
+Die Arbeit leistet einen Beitrag zur angewandten Forschung im Bereich multimodaler Deep-Learning-Modelle für Text- und Tabellendaten. Die wesentlichen Beiträge lassen sich wie folgt zusammenfassen:
 \begin{itemize}
-    \item \textbf{Modellentwicklung:} Konzeption der CrossBERT-Architektur zur Integration heterogener Datenströme.
-    \item \textbf{Evaluation:} Systematischer Vergleich mit etablierten Baselines auf einem internen Versicherungsdatensatz sowie externen Benchmarks, unter Berücksichtigung von Performance und Effizienz.
-    \item \textbf{Analyse:} Untersuchung verschiedener Fusionsarchitekturen und deren Auswirkung auf die Modellentscheidung.
+    \item \textbf{Entwicklung der CrossBERT-Architektur:} Konzeption und Implementierung eines Transformer-basierten Modells, das Text- und Tabellendaten mittels Cross-Attention verknüpft. Es werden mehrere Fusionsstrategien sowie ein TabularTokenizer zur Projektion von Tabellenfeatures in latente Tokens vorgestellt.
+    \item \textbf{Systematische Evaluation:} Vergleich der CrossBERT-Varianten mit etablierten Baselines auf einem realen Versicherungsdatensatz und öffentlichen Benchmarks, um den Beitrag von Cross-Attention zur Fusion von Text- und Tabellendaten zu untersuchen.
+    \item \textbf{Detaillierte Analyse und Ablationsstudien:} Untersuchung des Einflusses zentraler Architekturkomponenten wie der Position der Fusion, der Anzahl der Tabular Tokens und von Gating-Mechanismen. Ergänzend werden durch exemplarische Explainability-Analysen Einblicke in das Modellverhalten gewonnen.
 \end{itemize}
 
-Der Aufbau der Arbeit folgt dem Entwicklungsprozess: Kapitel~\ref{sec:theoretical_foundations} und \ref{sec:related_work} legen die theoretischen Grundlagen zur Repräsentation der in dieser Arbeit betrachteten Modalitäten, Transformern und multimodaler Fusion und ordnen die Arbeit in den aktuellen Forschungsstand ein. Kapitel~\ref{sec:methodik} beschreibt die Datenbasis, die Architektur von CrossBERT sowie das experimentelle Design. In Kapitel~\ref{sec:ergebnisse} werden die Ergebnisse der quantitativen Evaluation und der Ablationsstudien präsentiert. Abschließend diskutiert Kapitel~6 die Erkenntnisse und gibt einen Ausblick.
+Der Aufbau der Arbeit folgt dem Entwicklungsprozess. Kapitel~\ref{sec:theoretical_foundations} und \ref{sec:related_work} legen die theoretischen Grundlagen zur Repräsentation der in dieser Arbeit betrachteten Modalitäten, Transformern und multimodaler Fusion und ordnen die Arbeit in den aktuellen Forschungsstand ein. Kapitel~\ref{sec:methodik} beschreibt die Datenbasis, die Architektur von CrossBERT sowie das experimentelle Design. In Kapitel~\ref{sec:ergebnisse} werden die Ergebnisse der quantitativen Evaluation und der Ablationsstudien präsentiert. Abschließend diskutiert Kapitel~6 die Erkenntnisse und gibt einen Ausblick.
 
 
 \subsection{Voraussetzungen an den Lesenden}

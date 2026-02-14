@@ -1,7 +1,7 @@
 \section{Ergebnisse}
 \label{sec:ergebnisse}
 
-Dieses Kapitel stellt die Ergebnisse der Experimente vor. Der Fokus liegt auf dem Vergleich der CrossBERT-Architektur mit den etablierten Baselines sowie der Analyse zentraler Designentscheidungen durch Ablationsstudien. Eine abschließende Explainability-Analyse illustriert exemplarisch die Interaktion zwischen Text- und Tabulardaten.
+Dieses Kapitel stellt die Ergebnisse der Experimente vor. Der Fokus liegt auf dem Vergleich der CrossBERT-Architektur mit den etablierten Baselines sowie der Analyse zentraler Designentscheidungen durch Ablationsstudien. Eine abschließende Explainability-Analyse illustriert exemplarisch die Interaktion zwischen Text- und Tabellendaten.
 
 \subsection{Hauptexperiment}
 \label{sec:hauptexperiment}
@@ -53,12 +53,12 @@ Abbildung \ref{fig:crossbert_plots_positions} zeigt die Metrik-Verläufe. Die PR
 \subsubsection{Einfluss der Anzahl der Tab Tokens}
 \label{sec:res_ablation_tokens}
 
-Eine separate Versuchsreihe analysiert die Sensitivität des Modells gegenüber der Anzahl der Tab Tokens ($n_{tab}$, siehe Anhang \ref{app:ablation_num_tokens}). Dabei zeigt sich eine Sättigung: Während eine Erhöhung bis $n_{tab}=8$ die Performance stabilisiert, führt eine weitere Steigerung auf $n_{tab}=16$ zu leichten Einbußen. Für die finalen Modelle fiel die Wahl daher auf $n_{tab}=8$ als robusten Kompromiss.
+Eine separate Versuchsreihe analysiert die Sensitivität des Modells gegenüber der Anzahl der Tab Tokens ($n_{tab}$, siehe Anhang \ref{app:ablation_num_tokens}). Hierbei zeigt sich ein Sättigungseffekt. Während eine Erhöhung bis $n_{tab}=8$ die Performance stabilisiert, führt eine weitere Steigerung auf $n_{tab}=16$ bereits zu leichten Einbußen. Für die finalen Modelle fiel die Wahl daher auf $n_{tab}=8$ als robusten Kompromiss.
 
 \subsubsection{Tabular Tokenizer V2 und Gating}
 \label{sec:res_ablation_extensions}
 
-Die Untersuchung methodischer Erweiterungen zeigt unterschiedliche Effekte. Der TabTokenizer V2 (feature-spezifische Projektionen, siehe Anhang \ref{app:ablation_tokenizer_v2}) bietet in Bezug auf die hier betrachteten Leistungsmetriken keinen messbaren Mehrwert; ein möglicher Interpretierbarkeitsgewinn wird im Rahmen dieser Arbeit nicht quantitativ ausgewertet. Der Gating-Mechanismus (siehe Anhang \ref{app:ablation_gating}) steigerte die Average Precision hingegen leicht von 0{,}619 (Hybrid) auf 0{,}624 (Gated Hybrid), bei gleichbleibender AUC.
+Die Untersuchung methodischer Erweiterungen zeigt unterschiedliche Effekte. Der TabTokenizer V2 (feature-spezifische Projektionen, siehe Anhang \ref{app:ablation_tokenizer_v2}) bietet in Bezug auf die hier betrachteten Leistungsmetriken keinen messbaren Mehrwert. Ein möglicher Interpretierbarkeitsgewinn wird im Rahmen dieser Arbeit nicht quantitativ ausgewertet. Der Gating-Mechanismus (siehe Anhang \ref{app:ablation_gating}) steigerte die Average Precision hingegen leicht von 0{,}619 (Hybrid) auf 0{,}624 (Gated Hybrid), bei gleichbleibender AUC.
 
 \subsection{Externe Validierung}
 \label{sec:res_external_validation}
@@ -89,16 +89,23 @@ Tabelle \ref{tab:petfinder_summary} belegt eine deutliche Verbesserung durch Cro
 \end{table}
 
 \subsubsection{E-Commerce-Datensatz}
-Im Kontrast dazu zeigen die Resultate auf dem E-Commerce-Datensatz (Sentiment-Analyse, siehe Anhang \ref{app:ecommerce_evaluation}) nur marginale Unterschiede zwischen den Modellen (alle ca. 0{,}95 AUC). Alle Architekturen erreichen damit ein ähnlich hohes Leistungsniveau; in den hier betrachteten Metriken lässt sich kein klarer Vorsprung eines CrossBERT-Modells gegenüber den einfacheren Baselines erkennen. Wichtig ist, dass die komplexere CrossBERT-Architektur die Leistung nicht negativ beeinflusst.
+Im Kontrast dazu zeigen die Resultate auf dem E-Commerce-Datensatz (Sentiment-Analyse, siehe Anhang \ref{app:ecommerce_evaluation}) nur marginale Unterschiede zwischen den Modellen, die alle bei ca. 0{,}95 AUC liegen. Sämtliche Architekturen erreichen damit ein ähnlich hohes Leistungsniveau. In den hier betrachteten Metriken lässt sich kein klarer Vorsprung eines CrossBERT-Modells gegenüber den einfacheren Baselines erkennen. Wichtig ist jedoch, dass die komplexere CrossBERT-Architektur die Leistung nicht negativ beeinflusst.
 
 \newpage
 \subsection{Illustrative Explainability-Analyse}
 \label{sec:res_explainability}
 
-Dieser Abschnitt illustriert exemplarisch, wie Cross-Attention und strukturierte Merkmale in einzelnen Vorhersagen interagieren. Zur Interpretation wird \gls{shap} \cite{Lundberg2017} herangezogen. SHAP quantifiziert den Beitrag jedes Features zur Vorhersage als Shapley-Wert. Diese Arbeit nutzt SHAP als \textit{tabular-conditional} Erklärung: Der Text bleibt konstant, sodass ausschließlich die Beiträge der tabellarischen Merkmale im Kontext des gegebenen Textes isoliert werden. Die tabellarischen Features werden dabei, wie in Abschnitt \ref{sec:crossbert_architecture} beschrieben, global in eine feste Anzahl latenter Tabular Tokens projiziert, die jeweils eine gelernte Sicht auf die gesamte Tabellenzeile repräsentieren.
+Dieser Abschnitt illustriert exemplarisch, wie Cross-Attention und strukturierte Merkmale in einzelnen Vorhersagen interagieren. Zur Interpretation wird \gls{shap} \cite{Lundberg2017} herangezogen. SHAP quantifiziert den Beitrag jedes Features zur Vorhersage als Shapley-Wert. In dieser Arbeit wird SHAP als \textit{tabular-conditional} Erklärung genutzt. Dabei bleibt der Text konstant, sodass ausschließlich die Beiträge der tabellarischen Merkmale im Kontext des gegebenen Textes isoliert betrachtet werden. Die tabellarischen Features werden dabei, wie in Abschnitt \ref{sec:crossbert_architecture} beschrieben, global in eine feste Anzahl latenter Tabular Tokens projiziert, die jeweils eine gelernte Sicht auf die gesamte Tabellenzeile repräsentieren.
 
 \paragraph{Korrekte Klassifikation mit hoher Konfidenz}
-Abbildung \ref{fig:explainability_good_case} zeigt einen exemplarischen Fall, in dem das Modell die Zielklasse mit hoher Konfidenz korrekt vorhersagt. Für diesen Schadenfall mit strittiger Ampelsituation sagt das Modell die Regressklasse mit einer Konfidenz von 0{,}985 vorher; sowohl der Freitext (u.\,a.\ Hinweise auf Teilschuld des Unfallgegners und Empfehlung eines Sachverständigen) als auch mehrere tabellarische Merkmale (z.\,B.\ hoher Fahrzeugwert und Indikatoren für Teilschuld bzw.\ frühere Regressaktivitäten) sind mit einem Regressfall konsistent. Der obere Waterfall-Plot visualisiert, welche tabellarischen Merkmale die Vorhersage im Vergleich zur Baseline besonders stark nach oben oder unten verschieben; einzelne Feature-Ausprägungen, wie etwa ein positiver Indikator für Teilschuld, dominieren den Gesamtbeitrag deutlich. Die unteren Cross-Attention-Heatmaps zeigen, dass in der Early-Fusion zwei Tabular Tokens besonders stark gewichtet werden, während in der Late-Fusion ein Token dominiert und mehrere weitere mittlere Gewichte aufweisen.
+Abbildung \ref{fig:explainability_good_case} zeigt einen exemplarischen Fall, in dem das Modell die Zielklasse mit hoher Konfidenz korrekt vorhersagt. 
+Das Modell sagt die Regressklasse für diesen Schadenfall mit strittiger Ampelsituation mit einer Konfidenz von 0{,}985 vorher. Diese Einschätzung wird durch den Freitext gestützt, der Hinweise auf eine Teilschuld des Unfallgegners und die Empfehlung eines Sachverständigen enthält. Auch die tabellarischen Merkmale, wie ein hoher Fahrzeugwert und Indikatoren für Teilschuld oder frühere Regressaktivitäten, sprechen klar für einen Regressfall. 
+Der obere Waterfall-Plot visualisiert, welche tabellarischen Merkmale die Vorhersage im Vergleich zur Baseline besonders stark nach oben oder unten verschieben. Einzelne Feature-Ausprägungen, wie etwa ein positiver Indikator für Teilschuld, dominieren den Gesamtbeitrag deutlich. Die unteren Cross-Attention-Heatmaps zeigen, dass in der Early-Fusion zwei Tabular Tokens besonders stark gewichtet werden, während in der Late-Fusion ein Token dominiert und mehrere weitere mittlere Gewichte aufweisen.
+
+\paragraph{Fehlklassifikation mit hoher Konfidenz}
+Abbildung \ref{fig:explainability_bad_case} zeigt einen Fall, in dem das Modell trotz hoher Konfidenz eine falsche Klasse vorhersagt. Im gezeigten Beispiel liegt tatsächlich ein Regressfall (Klasse 1) vor, das Modell sagt jedoch die Nicht-Regressklasse mit maximaler Konfidenz (1{,}000) vorher. Der Freitext beschreibt einen vergleichsweise unspektakulären Rangierschaden mit unsicherer Einschätzung, ob ein Totalschaden vorliegt, sowie einem geplanten Sachverständigengutachten. 
+Die Visualisierung folgt dem Schema der vorherigen Abbildung. Im oberen Teil sind die SHAP-Beiträge der tabellarischen Merkmale aufgetragen, im unteren Teil die Cross-Attention-Gewichte der Early- und Late-Fusion über die acht Tabular Tokens. 
+Im Unterschied zum Good Case liegen die SHAP-Beiträge hier insgesamt auf einem sehr niedrigen Niveau, und sowohl Early- als auch Late-Fusion konzentrieren einen Großteil des Attention-Gewichts auf jeweils einen einzelnen Tabular Token, während die übrigen Tokens nur geringe Gewichte erhalten.
 
 \begin{figure}[ht]
     \centering
@@ -126,9 +133,6 @@ Abbildung \ref{fig:explainability_good_case} zeigt einen exemplarischen Fall, in
     \caption{Good Case Analyse: Oben der SHAP-Waterfall-Plot, unten die Attention-Weights der Early- (links) und Late-Fusion (rechts).}
     \label{fig:explainability_good_case}
 \end{figure}
-
-\paragraph{Fehlklassifikation mit hoher Konfidenz}
-Abbildung \ref{fig:explainability_bad_case} zeigt einen Fall, in dem das Modell trotz hoher Konfidenz eine falsche Klasse vorhersagt. Im gezeigten Beispiel liegt tatsächlich ein Regressfall (Klasse 1) vor, das Modell sagt jedoch die Nicht-Regressklasse mit maximaler Konfidenz (1{,}000) vorher. Der Freitext beschreibt einen vergleichsweise unspektakulären Rangierschaden mit unsicherer Einschätzung, ob ein Totalschaden vorliegt, sowie einem geplanten Sachverständigengutachten. Wie im Good Case werden oben die SHAP-Beiträge der tabellarischen Merkmale und darunter die Cross-Attention-Gewichte der Early- und Late-Fusion über die acht Tabular Tokens dargestellt. Im Unterschied zum Good Case liegen die SHAP-Beiträge hier insgesamt auf einem sehr niedrigen Niveau, und sowohl Early- als auch Late-Fusion konzentrieren einen Großteil des Attention-Gewichts auf jeweils einen einzelnen Tabular Token, während die übrigen Tokens nur geringe Gewichte erhalten.
 
 \begin{figure}[ht]
     \centering
